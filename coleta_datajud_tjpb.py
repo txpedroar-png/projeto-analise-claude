@@ -4,8 +4,21 @@ Filtra por classe processual + assunto (no servidor) e, dentro disso,
 por órgão julgador (1ª Câmara Cível) no cliente, já que o nome do órgão
 varia de tribunal para tribunal e não há garantia de um código estável
 conhecido de antemão.
+
+Classe 198 (Apelação Cível) é a classe de 2º grau/recursal -- Câmaras
+Cíveis julgam recursos, não processos de origem (ex.: "Procedimento
+Comum Cível", classe 7, é 1º grau e praticamente não coexiste com
+órgão colegiado tipo Câmara).
+
+Há campos que não pude confirmar com o manual público do DataJud no
+momento (indisponível/bloqueado): em especial, um indicador de
+"prioridade de tramitação (idoso)". Em vez de arriscar um nome de
+campo, use `--diagnostico` (ver main()) para inspecionar o _source
+bruto de processos reais e descobrir os nomes/códigos exatos.
 """
 
+import argparse
+import json
 import os
 import re
 import time
@@ -28,8 +41,14 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
-CLASSE_CODIGO = 7  # Procedimento Comum Cível
-ASSUNTO_CODIGO = 11807  # Tarifas
+CLASSE_CODIGO = 198  # Apelação Cível
+ASSUNTOS_CODIGOS = [7779, 7780, 11807]  # Dano Moral, Dano Material, Tarifas (qualquer um)
+
+# Opcional: se a inspeção via --diagnostico confirmar um campo de grau
+# (ex.: "grau": "G2") no schema atual, adicione aqui para reduzir o
+# volume no servidor -- Câmaras só existem em 2º grau. Não incluí por
+# não ter conseguido confirmar o nome/valor exatos agora.
+# FILTRO_GRAU = {"term": {"grau": "G2"}}
 
 TAMANHO_LOTE = 100
 MAX_TENTATIVAS = 5  # por página, em caso de erro de rede/HTTP
@@ -96,6 +115,34 @@ def _post_com_retentativa(payload: dict) -> dict:
     raise RuntimeError("Número máximo de tentativas excedido.")
 
 
+def montar_query() -> dict:
+    return {
+        "bool": {
+            "must": [
+                {"term": {"classe.codigo": CLASSE_CODIGO}},
+                {"terms": {"assuntos.codigo": ASSUNTOS_CODIGOS}},
+                # FILTRO_GRAU,  # ver comentário acima
+            ]
+        }
+    }
+
+
+def inspecionar_amostra(tamanho: int = 3) -> None:
+    """Imprime o _source bruto de alguns processos reais que casam com
+    classe+assuntos, sem nenhum filtro de órgão. Use para descobrir, na
+    prática, o nome/código exato do órgão colegiado e de qualquer campo
+    de prioridade -- sem depender do manual do CNJ."""
+    payload = {"query": montar_query(), "size": tamanho}
+    dados = _post_com_retentativa(payload)
+    hits = dados.get("hits", {}).get("hits", [])
+    if not hits:
+        print("Nenhum resultado para classe/assuntos atuais -- nada para inspecionar.")
+        return
+    for hit in hits:
+        print(json.dumps(hit.get("_source", {}), indent=2, ensure_ascii=False))
+        print("-" * 60)
+
+
 def buscar_processos_1_camara_civel() -> pd.DataFrame:
     processos_1_camara = []
     search_after = None
@@ -110,14 +157,7 @@ def buscar_processos_1_camara_civel() -> pd.DataFrame:
 
     while True:
         payload = {
-            "query": {
-                "bool": {
-                    "must": [
-                        {"term": {"classe.codigo": CLASSE_CODIGO}},
-                        {"term": {"assuntos.codigo": ASSUNTO_CODIGO}},
-                    ]
-                }
-            },
+            "query": montar_query(),
             "size": TAMANHO_LOTE,
             # sort explícito é necessário para paginação estável e para o
             # search_after funcionar; usa @timestamp + _id como par único
@@ -177,6 +217,22 @@ def _exibir(df: pd.DataFrame) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--diagnostico",
+        action="store_true",
+        help=(
+            "Em vez da coleta completa, imprime o _source bruto de alguns"
+            " processos (classe+assuntos, sem filtro de órgão) para você"
+            " inspecionar nomes/códigos de campos reais."
+        ),
+    )
+    args = parser.parse_args()
+
+    if args.diagnostico:
+        inspecionar_amostra()
+        return
+
     df_resultado = buscar_processos_1_camara_civel()
 
     print("\n" + "=" * 60)
