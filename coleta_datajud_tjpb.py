@@ -143,11 +143,23 @@ def inspecionar_amostra(tamanho: int = 3) -> None:
         print("-" * 60)
 
 
+def _construir_sort(usar_tiebreak: bool) -> list:
+    # NÃO use "_id" aqui: o Elasticsearch do DataJud proíbe fielddata
+    # sobre o campo meta "_id" (HTTP 400 "Fielddata access on the _id
+    # field is disallowed"). numeroProcesso serve de desempate real
+    # para @timestamp, evitando perder/duplicar registros em empates.
+    sort = [{"@timestamp": "asc"}]
+    if usar_tiebreak:
+        sort.append({"numeroProcesso": "asc"})
+    return sort
+
+
 def buscar_processos_1_camara_civel() -> pd.DataFrame:
     processos_1_camara = []
     search_after = None
     total_geral = None
     pagina = 0
+    usar_tiebreak = True
 
     print(
         "=== PROJETO: ANÁLISE ESCRITÓRIO DE JURISMETRIA ==="
@@ -159,15 +171,26 @@ def buscar_processos_1_camara_civel() -> pd.DataFrame:
         payload = {
             "query": montar_query(),
             "size": TAMANHO_LOTE,
-            # sort explícito é necessário para paginação estável e para o
-            # search_after funcionar; usa @timestamp + _id como par único
-            # para não deixar de fora nem duplicar registros entre páginas.
-            "sort": [{"@timestamp": "asc"}, {"_id": "asc"}],
+            "sort": _construir_sort(usar_tiebreak),
         }
         if search_after is not None:
             payload["search_after"] = search_after
 
-        dados = _post_com_retentativa(payload)
+        try:
+            dados = _post_com_retentativa(payload)
+        except requests.exceptions.HTTPError as exc:
+            # Se o campo de desempate também não puder ser ordenado
+            # neste cluster, recua para @timestamp isolado em vez de
+            # travar -- não há como confirmar de antemão quais campos
+            # o índice público aceita para "sort".
+            if usar_tiebreak and "fielddata" in str(exc).lower():
+                print(
+                    "⚠️ numeroProcesso não é ordenável neste cluster;"
+                    " prosseguindo apenas com @timestamp..."
+                )
+                usar_tiebreak = False
+                continue
+            raise
         hits = dados.get("hits", {}).get("hits", [])
 
         if total_geral is None:
