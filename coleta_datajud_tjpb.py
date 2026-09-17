@@ -1,20 +1,18 @@
 """Coleta de processos do TJPB via API pública do DataJud (CNJ).
 
-Filtra por classe processual + assunto (no servidor) e, dentro disso,
-por órgão julgador (1ª Câmara Cível) no cliente, já que o nome do órgão
-varia de tribunal para tribunal e não há garantia de um código estável
-conhecido de antemão.
+Por padrão, busca só por assunto (ex.: Tarifas, código 11807) -- sem
+exigir classe processual nem órgão julgador -- porque empilhar vários
+filtros ao mesmo tempo (classe + assunto + órgão) tende a zerar o
+resultado sem deixar claro qual filtro foi o culpado. Classe e o
+filtro de "1ª Câmara Cível" ficam disponíveis como opções (--classe,
+--somente-1-camara) para quem quiser restringir de novo depois de
+inspecionar os dados reais com --diagnostico.
 
-Classe 198 (Apelação Cível) é a classe de 2º grau/recursal -- Câmaras
-Cíveis julgam recursos, não processos de origem (ex.: "Procedimento
-Comum Cível", classe 7, é 1º grau e praticamente não coexiste com
-órgão colegiado tipo Câmara).
-
-Há campos que não pude confirmar com o manual público do DataJud no
-momento (indisponível/bloqueado): em especial, um indicador de
-"prioridade de tramitação (idoso)". Em vez de arriscar um nome de
-campo, use `--diagnostico` (ver main()) para inspecionar o _source
-bruto de processos reais e descobrir os nomes/códigos exatos.
+Há campos que não pude confirmar com o manual público do DataJud
+(indisponível/bloqueado a partir deste ambiente): em especial, um
+indicador de "prioridade de tramitação (idoso)". Use --diagnostico
+para inspecionar o _source bruto de processos reais e descobrir
+nomes/códigos exatos, em vez de arriscar um palpite.
 """
 
 import argparse
@@ -41,14 +39,13 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
-CLASSE_CODIGO = 198  # Apelação Cível
-ASSUNTOS_CODIGOS = [7779, 7780, 11807]  # Dano Moral, Dano Material, Tarifas (qualquer um)
+ASSUNTO_TARIFAS = 11807
+ASSUNTO_DANO_MORAL = 7779
+ASSUNTO_DANO_MATERIAL = 7780
+DEFAULT_ASSUNTOS = [ASSUNTO_TARIFAS]
 
-# Opcional: se a inspeção via --diagnostico confirmar um campo de grau
-# (ex.: "grau": "G2") no schema atual, adicione aqui para reduzir o
-# volume no servidor -- Câmaras só existem em 2º grau. Não incluí por
-# não ter conseguido confirmar o nome/valor exatos agora.
-# FILTRO_GRAU = {"term": {"grau": "G2"}}
+CLASSE_APELACAO_CIVEL = 198
+CLASSE_PROCEDIMENTO_COMUM_CIVEL = 7
 
 TAMANHO_LOTE = 100
 MAX_TENTATIVAS = 5  # por página, em caso de erro de rede/HTTP
@@ -115,28 +112,25 @@ def _post_com_retentativa(payload: dict) -> dict:
     raise RuntimeError("Número máximo de tentativas excedido.")
 
 
-def montar_query() -> dict:
-    return {
-        "bool": {
-            "must": [
-                {"term": {"classe.codigo": CLASSE_CODIGO}},
-                {"terms": {"assuntos.codigo": ASSUNTOS_CODIGOS}},
-                # FILTRO_GRAU,  # ver comentário acima
-            ]
-        }
-    }
+def montar_query(assuntos_codigos: list, classe_codigo: int | None) -> dict:
+    must = [{"terms": {"assuntos.codigo": assuntos_codigos}}]
+    if classe_codigo is not None:
+        must.append({"term": {"classe.codigo": classe_codigo}})
+    return {"bool": {"must": must}}
 
 
-def inspecionar_amostra(tamanho: int = 3) -> None:
-    """Imprime o _source bruto de alguns processos reais que casam com
-    classe+assuntos, sem nenhum filtro de órgão. Use para descobrir, na
+def inspecionar_amostra(
+    assuntos_codigos: list, classe_codigo: int | None, tamanho: int = 3
+) -> None:
+    """Imprime o _source bruto de alguns processos reais que casam com o
+    filtro atual, sem nenhum filtro de órgão. Use para descobrir, na
     prática, o nome/código exato do órgão colegiado e de qualquer campo
     de prioridade -- sem depender do manual do CNJ."""
-    payload = {"query": montar_query(), "size": tamanho}
+    payload = {"query": montar_query(assuntos_codigos, classe_codigo), "size": tamanho}
     dados = _post_com_retentativa(payload)
     hits = dados.get("hits", {}).get("hits", [])
     if not hits:
-        print("Nenhum resultado para classe/assuntos atuais -- nada para inspecionar.")
+        print("Nenhum resultado para os parâmetros atuais -- nada para inspecionar.")
         return
     for hit in hits:
         print(json.dumps(hit.get("_source", {}), indent=2, ensure_ascii=False))
@@ -154,8 +148,12 @@ def _construir_sort(usar_tiebreak: bool) -> list:
     return sort
 
 
-def buscar_processos_1_camara_civel() -> pd.DataFrame:
-    processos_1_camara = []
+def buscar_processos(
+    assuntos_codigos: list,
+    classe_codigo: int | None,
+    somente_1_camara: bool = False,
+) -> pd.DataFrame:
+    processos = []
     search_after = None
     total_geral = None
     pagina = 0
@@ -163,13 +161,13 @@ def buscar_processos_1_camara_civel() -> pd.DataFrame:
 
     print(
         "=== PROJETO: ANÁLISE ESCRITÓRIO DE JURISMETRIA ==="
-        "\nIniciando varredura no DataJud (TJPB) com filtro exclusivo para a 1ª"
-        " Câmara Cível..."
+        f"\nAssuntos: {assuntos_codigos} | Classe: {classe_codigo or 'qualquer'} |"
+        f" Filtro 1ª Câmara Cível: {'sim' if somente_1_camara else 'não'}"
     )
 
     while True:
         payload = {
-            "query": montar_query(),
+            "query": montar_query(assuntos_codigos, classe_codigo),
             "size": TAMANHO_LOTE,
             "sort": _construir_sort(usar_tiebreak),
         }
@@ -204,19 +202,21 @@ def buscar_processos_1_camara_civel() -> pd.DataFrame:
             source = item.get("_source", {})
             orgao = source.get("orgaoJulgador", {}).get("nome", "")
 
-            if eh_primeira_camara_civel(orgao):
-                assuntos = ", ".join(
-                    a.get("nome", "") for a in source.get("assuntos", [])
-                )
-                data_ajuizamento = source.get("dataAjuizamento") or "N/D"
+            if somente_1_camara and not eh_primeira_camara_civel(orgao):
+                continue
 
-                processos_1_camara.append({
-                    "Número CNJ": source.get("numeroProcesso"),
-                    "Classe": source.get("classe", {}).get("nome"),
-                    "Órgão Julgador": orgao,
-                    "Assuntos": assuntos,
-                    "Data Ajuizamento": data_ajuizamento[:10],
-                })
+            assuntos = ", ".join(
+                a.get("nome", "") for a in source.get("assuntos", [])
+            )
+            data_ajuizamento = source.get("dataAjuizamento") or "N/D"
+
+            processos.append({
+                "Número CNJ": source.get("numeroProcesso"),
+                "Classe": source.get("classe", {}).get("nome"),
+                "Órgão Julgador": orgao,
+                "Assuntos": assuntos,
+                "Data Ajuizamento": data_ajuizamento[:10],
+            })
 
         pagina += 1
         print(f"Progresso: página {pagina} ({pagina * TAMANHO_LOTE} lidos)...")
@@ -227,7 +227,7 @@ def buscar_processos_1_camara_civel() -> pd.DataFrame:
         search_after = hits[-1]["sort"]
         time.sleep(0.5)  # margem de segurança para limite de requisições
 
-    return pd.DataFrame(processos_1_camara)
+    return pd.DataFrame(processos)
 
 
 def _exibir(df: pd.DataFrame) -> None:
@@ -242,34 +242,54 @@ def _exibir(df: pd.DataFrame) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--assunto",
+        type=int,
+        action="append",
+        dest="assuntos",
+        help=(
+            "Código de assunto a incluir (repita para OR entre vários)."
+            f" Padrão: {DEFAULT_ASSUNTOS} (Tarifas)."
+        ),
+    )
+    parser.add_argument(
+        "--classe",
+        type=int,
+        default=None,
+        help="Código de classe processual para restringir a busca (padrão: nenhum).",
+    )
+    parser.add_argument(
+        "--somente-1-camara",
+        action="store_true",
+        help="Filtra, no cliente, apenas processos da 1ª Câmara Cível.",
+    )
+    parser.add_argument(
         "--diagnostico",
         action="store_true",
         help=(
             "Em vez da coleta completa, imprime o _source bruto de alguns"
-            " processos (classe+assuntos, sem filtro de órgão) para você"
-            " inspecionar nomes/códigos de campos reais."
+            " processos (mesmo filtro de assunto/classe, sem filtro de"
+            " órgão) para você inspecionar nomes/códigos de campos reais."
         ),
     )
     args = parser.parse_args()
 
+    assuntos_codigos = args.assuntos or DEFAULT_ASSUNTOS
+
     if args.diagnostico:
-        inspecionar_amostra()
+        inspecionar_amostra(assuntos_codigos, args.classe)
         return
 
-    df_resultado = buscar_processos_1_camara_civel()
+    df_resultado = buscar_processos(assuntos_codigos, args.classe, args.somente_1_camara)
 
     print("\n" + "=" * 60)
     if not df_resultado.empty:
-        print(f"✅ Apuração concluída! Processos vinculados à 1ª Câmara Cível: {len(df_resultado)}\n")
+        print(f"✅ Apuração concluída! Processos encontrados: {len(df_resultado)}\n")
         _exibir(df_resultado)
-        caminho_csv = "processos_1_camara_civel_tjpb.csv"
+        caminho_csv = "processos_datajud_tjpb.csv"
         df_resultado.to_csv(caminho_csv, index=False, encoding="utf-8-sig")
         print(f"\n💾 Resultado salvo em {caminho_csv}")
     else:
-        print(
-            "❌ Nenhum processo correspondente foi isolado para a 1ª Câmara Cível"
-            " com os parâmetros atuais."
-        )
+        print("❌ Nenhum processo correspondente foi encontrado com os parâmetros atuais.")
 
 
 if __name__ == "__main__":
