@@ -37,6 +37,10 @@ TIPOS = [  # ordem importa: primeiro que casar
     ("Decisão interlocutória", re.compile(r"\b(?:defiro|indefiro|decido|tutela)\b", re.I)),
     ("Despacho", re.compile(r"\b(?:intime-se|intimem-se|manifeste-se|cite-se|vista)\b", re.I)),
 ]
+RE_PRAZO_EXTENSO = re.compile(
+    r"prazo\s+(?:comum\s+|sucessivo\s+)?de\s+(cinco|dez|quinze|trinta|sessenta)\s+dias", re.IGNORECASE
+)
+EXTENSO = {"cinco": 5, "dez": 10, "quinze": 15, "trinta": 30, "sessenta": 60}
 RE_DOBRO = re.compile(r"\bem\s+dobro\b|\bart\.?\s*229\b", re.I)
 COLUNAS = [
     "id", "processo", "tribunal", "comarca", "tipo_ato", "prazo_dias", "inicio_contagem",
@@ -60,6 +64,28 @@ def trecho(texto: str, inicio: int, fim: int, margem: int = 160) -> str:
     return " ".join(texto[a:b].split())
 
 
+def tipo_ato(texto: str) -> str:
+    return next((nome for nome, rx in TIPOS if rx.search(texto)), "Outro")
+
+
+def detectar_prazo(texto: str) -> tuple[int | None, list[str], list[re.Match]]:
+    """Prazo em dias só quando é único e inequívoco; do contrário, None e os motivos."""
+    achados = list(RE_PRAZO.finditer(texto))
+    dias = {int(m.group(1)) for m in achados if m.group(2).lower().startswith("dia")}
+    dias |= {EXTENSO[m.group(1).lower()] for m in RE_PRAZO_EXTENSO.finditer(texto)}
+    motivos = []
+    if any(not m.group(2).lower().startswith("dia") for m in achados):
+        motivos.append("prazo em horas ou meses")
+    if not dias:
+        motivos.append("prazo expresso não encontrado (art. 218, § 3º? ciência pura?)")
+    elif len(dias) > 1:
+        motivos.append(f"mais de um prazo: {sorted(dias)}")
+    if RE_DOBRO.search(texto):
+        motivos.append("menção a prazo em dobro")
+    prazo = next(iter(dias)) if len(dias) == 1 and not motivos else None
+    return prazo, motivos, achados
+
+
 def triar_linha(i: int, linha: dict, calendarios: dict, hoje: dt.date) -> dict:
     texto = linha.get("texto", "") or ""
     numero = (linha.get("processo") or "").strip()
@@ -70,17 +96,9 @@ def triar_linha(i: int, linha: dict, calendarios: dict, hoje: dt.date) -> dict:
     if erro_cnj:
         motivos.append(f"CNJ: {erro_cnj}")
 
-    tipo = next((nome for nome, rx in TIPOS if rx.search(texto)), "Outro")
-    achados = list(RE_PRAZO.finditer(texto))
-    prazos_dias = {int(m.group(1)) for m in achados if m.group(2).lower().startswith("dia")}
-    if any(not m.group(2).lower().startswith("dia") for m in achados):
-        motivos.append("prazo em horas ou meses")
-    if not prazos_dias:
-        motivos.append("prazo expresso não encontrado (art. 218, § 3º? ciência pura?)")
-    elif len(prazos_dias) > 1:
-        motivos.append(f"mais de um prazo: {sorted(prazos_dias)}")
-    if RE_DOBRO.search(texto):
-        motivos.append("menção a prazo em dobro")
+    tipo = tipo_ato(texto)
+    prazo, motivos_prazo, achados = detectar_prazo(texto)
+    motivos += motivos_prazo
     if tipo == "Intimação de pauta/audiência":
         motivos.append("audiência: conferir data/hora e agenda")
 
@@ -90,11 +108,11 @@ def triar_linha(i: int, linha: dict, calendarios: dict, hoje: dt.date) -> dict:
     if achados:
         saida["trecho_comando"] = trecho(texto, achados[0].start(), achados[0].end())
 
-    if len(prazos_dias) == 1 and trib:
+    if prazo and trib:
         chave = (trib, saida["comarca"])
         if chave not in calendarios:
             calendarios[chave] = Calendario(CSV_PADRAO, trib, saida["comarca"])
-        r = calcular_prazo(ler_data(linha["data_disponibilizacao"]), prazos_dias.pop(), calendarios[chave], hoje)
+        r = calcular_prazo(ler_data(linha["data_disponibilizacao"]), prazo, calendarios[chave], hoje)
         saida.update(prazo_dias=r.dias_prazo, inicio_contagem=r.inicio_contagem,
                      vencimento_interno=r.vencimento_interno, termo_legal=r.termo_legal,
                      dias_uteis_restantes=r.dias_uteis_restantes, criticidade=r.criticidade,

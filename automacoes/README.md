@@ -1,4 +1,4 @@
-# Automações jurídicas (Python, só biblioteca padrão)
+# Automações jurídicas (Python)
 
 Ferramentas determinísticas para tirar da IA o que não exige leitura: datas, prazos e validação de números CNJ.
 Toda saída é **minuta sujeita à revisão de advogado** (manual, seção 2).
@@ -8,8 +8,27 @@ Toda saída é **minuta sujeita à revisão de advogado** (manual, seção 2).
 | `prazos.py` | Prazo em dias úteis com a regra conservadora do escritório, recesso do art. 220 e feriados do CSV. Devolve vencimento interno **e** termo legal. | `python -m automacoes.prazos 2026-10-09 15 --comarca 0231` |
 | `cnj.py` | Valida o dígito (Res. CNJ 65/2008) e a estrutura; audita minutas `.docx`/`.txt`; sai com código 1 se houver número inválido. | `python -m automacoes.cnj minuta.docx` |
 | `triagem.py` | Pré-triagem de publicações: resolve em Python as que têm prazo expresso e isola em `--para-ia` só as que exigem leitura. | `python -m automacoes.triagem triagem.csv -o prazos.csv --para-ia revisar.txt` |
-| `diagnostico_djen.py` | Uma consulta à API do DJEN e registro em log, para diagnosticar o HTTP 403 do Robô Diário. | `python -m automacoes.diagnostico_djen --oab 29573 --uf PB` |
-| `executar_robo.bat` | Execução pelo Agendador de Tarefas do Windows, com log datado em `logs/`. | — |
+| `diagnostico_djen.py` | Uma consulta à API do DJEN e registro em log, para diagnosticar o HTTP 403. | `python -m automacoes.diagnostico_djen --oab 29573 --uf PB` |
+
+Os quatro módulos acima usam só a biblioteca padrão. Os robôs abaixo precisam de `requests` e `openpyxl` (`pip install -r requirements.txt`).
+
+## Robôs (`automacoes/robos/`)
+
+| Robô | Substitui | Comando |
+|---|---|---|
+| `robo_prazos.py` | Robô de prazos v5 | `python -m automacoes.robos.robo_prazos` |
+| `resgate_emails.py` | Resgate de e-mails | `python -m automacoes.robos.resgate_emails` |
+| `calculadora_bacen.py` | Calculadora Bacen | `python -m automacoes.robos.calculadora_bacen Calculo_Valores.xlsx --citacao 28/05/2019 --dobra` |
+| `iniciar_robos.bat` | `iniciar_robo.bat` | Agendador de Tarefas: roda o resgate e depois o robô de prazos, com log em `logs\robos.log` |
+
+### Instalação no computador do escritório (uma vez)
+
+1. Clonar o repositório **fora** da pasta do Google Drive e criar o ambiente: `python -m venv .venv`, `.venv\Scripts\activate`, `pip install -r requirements.txt`.
+2. Copiar `config_local.exemplo.ini` para `config_local.ini` e ajustar o caminho da planilha e o e-mail.
+3. Gerar **nova** senha de app do Gmail e gravar só na variável de ambiente: `setx GMAIL_SENHA_APP "nova-senha"`.
+4. Apontar o Agendador de Tarefas para `automacoes\robos\iniciar_robos.bat`.
+
+Os robôs mantêm até 10 backups por robô na subpasta `backups\`, ao lado da planilha. O robô de prazos grava ao lado da planilha o `revisar_ia.txt`, só com as publicações que exigem leitura.
 
 ## `feriados_forenses.csv`
 

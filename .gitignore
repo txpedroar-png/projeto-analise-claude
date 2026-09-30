@@ -4,3 +4,5 @@ __pycache__/
 logs/
 diagnostico_djen.log
 *.pyc
+config_local.ini
+backups/
