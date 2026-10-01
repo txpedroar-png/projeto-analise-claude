@@ -1,7 +1,10 @@
 """Resgate de processos novos a partir dos e-mails de push dos tribunais.
 
 Correções em relação à versão anterior:
-- a senha de app sai do código: variável de ambiente GMAIL_SENHA_APP;
+- a senha de app sai do código: variável de ambiente GMAIL_SENHA_APP ou chave
+  senha_app do config_local.ini (fora do Git). Sem senha, ou com ativo = nao,
+  o resgate é pulado sem erro e o robô de prazos roda normalmente;
+- falha de login no Gmail é registrada sem tocar na planilha;
 - a caixa é aberta só para leitura e as mensagens são lidas com BODY.PEEK[]; o
   FETCH (RFC822) anterior marcava como LIDOS todos os e-mails dos últimos 15 dias;
 - o tribunal vinha de split(".")[3:5], que devolve "15.0231" e nunca casava com
@@ -132,13 +135,27 @@ def main(argv: list[str] | None = None) -> int:
     configurar_log()
     cfg = carregar_config(a.config)
     planilha = Path(cfg["planilha"]["caminho"])
-    g = cfg["gmail"]
+    g = cfg["gmail"] if cfg.has_section("gmail") else None
+    if g is None or g.get("ativo", "sim").strip().lower() in ("nao", "não", "no", "false", "0", "off"):
+        log.info("Resgate de e-mails desativado na configuração ([gmail] ativo = nao).")
+        return 0
+    senha = segredo("GMAIL_SENHA_APP", g, "senha_app")
+    if not senha:
+        log.warning("Resgate de e-mails pulado: sem senha (GMAIL_SENHA_APP ou senha_app no config_local.ini).")
+        return 0
     remetentes = [r.strip().lower() for r in g.get("remetentes", "").split(",") if r.strip()]
     if not remetentes:
         log.warning("Sem filtro de remetentes: qualquer CNJ citado em qualquer e-mail será cadastrado.")
 
     desde = dt.date.today() - dt.timedelta(days=g.getint("dias_busca", fallback=15))
-    processos = buscar_emails(g["email"], segredo("GMAIL_SENHA_APP"), desde, remetentes)
+    try:
+        processos = buscar_emails(g["email"], senha, desde, remetentes)
+    except imaplib.IMAP4.error as e:
+        log.error("Gmail recusou o login (%s). Senha de app revogada ou incorreta? Planilha não alterada.", e)
+        return 2
+    except OSError as e:
+        log.error("Sem conexão com o Gmail (%s). Planilha não alterada.", e)
+        return 2
     if not processos:
         log.info("Nenhum processo encontrado nos e-mails.")
         return 0

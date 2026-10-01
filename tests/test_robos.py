@@ -218,3 +218,36 @@ def test_imap_somente_leitura_e_peek(monkeypatch):
     monkeypatch.setattr(rese.imaplib, "IMAP4_SSL", ImapFalso)
     assert [n for n, _ in rese.buscar_emails("u", "s", D("2026-09-15"), ["jus.br"])] == [N1]
     assert registro == {"readonly": True, "partes": "(BODY.PEEK[])"}
+
+
+def config_gmail(tmp_path, extra=""):
+    caminho = planilha(tmp_path)
+    cfg = tmp_path / "g.ini"
+    cfg.write_text(f"[planilha]\ncaminho = {caminho}\n[gmail]\nemail = x@gmail.com\n{extra}", encoding="utf-8")
+    return cfg
+
+
+def test_sem_senha_pula_resgate_sem_erro(tmp_path, monkeypatch):
+    monkeypatch.delenv("GMAIL_SENHA_APP", raising=False)
+    monkeypatch.setattr(rese, "buscar_emails", lambda *a: pytest.fail("não deveria acessar o Gmail"))
+    assert rese.main(["--config", str(config_gmail(tmp_path))]) == 0
+
+
+def test_resgate_desativado(tmp_path, monkeypatch):
+    monkeypatch.setenv("GMAIL_SENHA_APP", "x")
+    monkeypatch.setattr(rese, "buscar_emails", lambda *a: pytest.fail("não deveria acessar o Gmail"))
+    assert rese.main(["--config", str(config_gmail(tmp_path, "ativo = nao\n"))]) == 0
+
+
+def test_senha_do_config_e_login_recusado_nao_tocam_planilha(tmp_path, monkeypatch):
+    monkeypatch.delenv("GMAIL_SENHA_APP", raising=False)
+    usada = {}
+
+    def recusa(usuario, senha, desde, remetentes):
+        usada["senha"] = senha
+        raise rese.imaplib.IMAP4.error("AUTHENTICATIONFAILED")
+    monkeypatch.setattr(rese, "buscar_emails", recusa)
+    cfg = config_gmail(tmp_path, "senha_app = abc\n")
+    assert rese.main(["--config", str(cfg)]) == 2
+    assert usada["senha"] == "abc"
+    assert not (tmp_path / "backups").exists()

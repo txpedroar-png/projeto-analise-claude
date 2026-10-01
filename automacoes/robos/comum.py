@@ -38,11 +38,12 @@ def carregar_config(caminho: Path | str | None = None) -> configparser.ConfigPar
     return cfg
 
 
-def segredo(nome: str) -> str:
+def segredo(nome: str, secao=None, chave: str = "") -> str | None:
+    """Variável de ambiente; na falta, a chave da seção do config_local.ini (fora do Git)."""
     valor = os.environ.get(nome, "").strip()
-    if not valor:
-        raise RuntimeError(f"Defina a variável de ambiente {nome} (no Windows: setx {nome} \"valor\").")
-    return valor
+    if not valor and secao is not None and chave:
+        valor = secao.get(chave, "").strip()
+    return valor or None
 
 
 def aguardar_arquivo(caminho: Path, tentativas: int = 10, intervalo: int = 30) -> None:
