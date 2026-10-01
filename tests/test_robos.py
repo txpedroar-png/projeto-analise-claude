@@ -1,12 +1,10 @@
 import datetime as dt
-from email.message import EmailMessage
 
 import pytest
 from openpyxl import Workbook, load_workbook
 
 from automacoes import cnj
 from automacoes.robos import calculadora_bacen as calc
-from automacoes.robos import resgate_emails as rese
 from automacoes.robos import robo_prazos as robo
 from automacoes.robos.comum import COL_DATA_1, COL_PROC_1, LINHA_INICIAL, mapear_processos
 
@@ -173,81 +171,26 @@ def test_main_cai_para_datajud_quando_djen_falha(tmp_path, monkeypatch):
     assert any((tmp_path / "backups").iterdir())
 
 
-# ---------------- resgate de e-mails ----------------
-
-def mensagem(remetente, corpo_html):
-    m = EmailMessage()
-    m["From"], m["Subject"] = remetente, "Intimação eletrônica"
-    m.set_content(corpo_html, subtype="html")
-    return m
-
-
-def test_data_imap_independe_de_locale():
-    assert rese.data_imap(D("2026-09-05")) == "05-Sep-2026"
-
-
-def test_extrai_de_html_e_descarta_cnj_invalido():
-    m = mensagem("pje@tjpb.jus.br", f"<p>Processo <b>{N1}</b> e 0000001-35.2020.8.15.0001</p>")
-    assert [n for n, _ in rese.extrair_processos(m)] == [N1]
-
-
-def test_filtro_de_remetente():
-    assert rese.remetente_aceito(mensagem("PJe <pje@tjpb.jus.br>", ""), ["jus.br"])
-    assert not rese.remetente_aceito(mensagem("news@jornal.com", ""), ["jus.br"])
-
-
-def test_cadastra_na_aba_certa_sem_duplicar(tmp_path):
+def test_processo_novo_do_djen_e_cadastrado(tmp_path):
     wb = load_workbook(planilha(tmp_path, [N1]))
-    assert rese.cadastrar(wb, [(N1, "já existe"), (N2, "novo"), (N2, "repetido")]) == 1
-    assert wb["TJPB"].cell(row=LINHA_INICIAL + 1, column=COL_PROC_1).value == N2
+    mapa = mapear_processos(wb)
+    itens = [
+        {"numero_processo": cnj.digitos(N2), "texto": "Intime-se no prazo de 5 dias.",
+         "data_disponibilizacao": "2026-09-18", "nomeOrgao": "1ª Vara de Mamanguape"},
+        {"numero_processo": cnj.digitos(N2), "texto": "Ciência.", "data_disponibilizacao": "2026-09-10"},
+        {"numero_processo": "0000001-35.2020.8.15.0001", "texto": "Ciência.", "data_disponibilizacao": "2026-09-10"},
+    ]
+    triagem = robo.trilha_djen(wb, mapa, itens, {}, D("2026-09-21"))
+    ws = wb["TJPB"]
+    assert ws.cell(row=LINHA_INICIAL + 1, column=COL_PROC_1).value == N2
+    assert ws.cell(row=LINHA_INICIAL + 2, column=COL_PROC_1).value is None  # CNJ inválido não entra
+    assert robo.ler_data(ws.cell(row=LINHA_INICIAL + 1, column=COL_DATA_1).value) == D("2026-09-18")
+    assert "processo novo cadastrado" in triagem[0]["Revisar"]
+    assert "processo novo" not in triagem[1]["Revisar"]  # cadastrado uma vez só
 
 
-def test_imap_somente_leitura_e_peek(monkeypatch):
-    registro = {}
-
-    class ImapFalso:
-        def __init__(self, host): pass
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
-        def login(self, u, s): pass
-        def select(self, caixa, readonly=False): registro["readonly"] = readonly
-        def search(self, *a): return "OK", [b"1"]
-        def fetch(self, i, partes):
-            registro["partes"] = partes
-            return "OK", [(b"1", mensagem("pje@tjpb.jus.br", f"<p>{N1}</p>").as_bytes())]
-    monkeypatch.setattr(rese.imaplib, "IMAP4_SSL", ImapFalso)
-    assert [n for n, _ in rese.buscar_emails("u", "s", D("2026-09-15"), ["jus.br"])] == [N1]
-    assert registro == {"readonly": True, "partes": "(BODY.PEEK[])"}
-
-
-def config_gmail(tmp_path, extra=""):
-    caminho = planilha(tmp_path)
-    cfg = tmp_path / "g.ini"
-    cfg.write_text(f"[planilha]\ncaminho = {caminho}\n[gmail]\nemail = x@gmail.com\n{extra}", encoding="utf-8")
-    return cfg
-
-
-def test_sem_senha_pula_resgate_sem_erro(tmp_path, monkeypatch):
-    monkeypatch.delenv("GMAIL_SENHA_APP", raising=False)
-    monkeypatch.setattr(rese, "buscar_emails", lambda *a: pytest.fail("não deveria acessar o Gmail"))
-    assert rese.main(["--config", str(config_gmail(tmp_path))]) == 0
-
-
-def test_resgate_desativado(tmp_path, monkeypatch):
-    monkeypatch.setenv("GMAIL_SENHA_APP", "x")
-    monkeypatch.setattr(rese, "buscar_emails", lambda *a: pytest.fail("não deveria acessar o Gmail"))
-    assert rese.main(["--config", str(config_gmail(tmp_path, "ativo = nao\n"))]) == 0
-
-
-def test_senha_do_config_e_login_recusado_nao_tocam_planilha(tmp_path, monkeypatch):
-    monkeypatch.delenv("GMAIL_SENHA_APP", raising=False)
-    usada = {}
-
-    def recusa(usuario, senha, desde, remetentes):
-        usada["senha"] = senha
-        raise rese.imaplib.IMAP4.error("AUTHENTICATIONFAILED")
-    monkeypatch.setattr(rese, "buscar_emails", recusa)
-    cfg = config_gmail(tmp_path, "senha_app = abc\n")
-    assert rese.main(["--config", str(cfg)]) == 2
-    assert usada["senha"] == "abc"
-    assert not (tmp_path / "backups").exists()
+def test_cadastro_de_novos_desligavel(tmp_path):
+    wb = load_workbook(planilha(tmp_path, [N1]))
+    itens = [{"numero_processo": cnj.digitos(N2), "texto": "Ciência.", "data_disponibilizacao": "2026-09-10"}]
+    robo.trilha_djen(wb, mapear_processos(wb), itens, {}, D("2026-09-21"), cadastrar_novos=False)
+    assert wb["TJPB"].cell(row=LINHA_INICIAL + 1, column=COL_PROC_1).value is None

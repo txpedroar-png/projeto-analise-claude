@@ -1,7 +1,7 @@
 """Configuração e rotinas de planilha compartilhadas pelos robôs.
 
 A configuração fica em config_local.ini, na raiz do repositório (fora do Git; modelo em
-config_local.exemplo.ini). Senhas NUNCA ficam no arquivo: vêm de variáveis de ambiente.
+config_local.exemplo.ini).
 """
 from __future__ import annotations
 
@@ -36,14 +36,6 @@ def carregar_config(caminho: Path | str | None = None) -> configparser.ConfigPar
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.read(caminho, encoding="utf-8")
     return cfg
-
-
-def segredo(nome: str, secao=None, chave: str = "") -> str | None:
-    """Variável de ambiente; na falta, a chave da seção do config_local.ini (fora do Git)."""
-    valor = os.environ.get(nome, "").strip()
-    if not valor and secao is not None and chave:
-        valor = secao.get(chave, "").strip()
-    return valor or None
 
 
 def aguardar_arquivo(caminho: Path, tentativas: int = 10, intervalo: int = 30) -> None:

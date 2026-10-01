@@ -9,7 +9,9 @@ Correções em relação à v5:
 - prazo detectado pela mesma regra da triagem (sem confundir horas, meses e anos com dias);
 - vencimento, termo legal e criticidade calculados em automacoes.prazos;
 - linhas ambíguas vão para revisar_ia.txt, ao lado da planilha;
-- hash de movimento do DataJud não quebra com código numérico; aliases TRF e TJDFT corrigidos.
+- hash de movimento do DataJud não quebra com código numérico; aliases TRF e TJDFT corrigidos;
+- processo do DJEN que não está na planilha é cadastrado na aba do tribunal (substitui o
+  antigo resgate de e-mails); desligue com [djen] cadastrar_novos = nao.
 
 Uso:
     python -m automacoes.robos.robo_prazos
@@ -30,7 +32,8 @@ from openpyxl import load_workbook
 from automacoes import cnj
 from automacoes.prazos import Calendario, calcular_prazo
 from automacoes.robos.comum import (
-    backup, aguardar_arquivo, carregar_config, configurar_log, log, mapear_processos, verificar_livre,
+    COL_DATA_1, COL_PROC_1, LINHA_INICIAL, backup, aguardar_arquivo, carregar_config, configurar_log, log,
+    mapear_processos, verificar_livre,
 )
 from automacoes.triagem import detectar_prazo, tipo_ato
 
@@ -165,20 +168,47 @@ def linha_triagem(data: dt.date | None, unidade: str, numero: str, texto: str, c
     return linha
 
 
-def trilha_djen(wb, mapa, itens, calendarios, hoje) -> list[dict]:
+def cadastrar_novo(wb, mapa, numero: str, unidade: str) -> dict | None:
+    """Cadastra na aba do tribunal (colunas B e C) processo válido ausente da planilha."""
+    aba = cnj.tribunal(numero) if not cnj.diagnosticar(numero) else None
+    if aba not in wb.sheetnames:
+        return None
+    ws = wb[aba]
+    linha = LINHA_INICIAL
+    while ws.cell(row=linha, column=COL_PROC_1).value not in (None, ""):
+        linha += 1
+    ws.cell(row=linha, column=COL_PROC_1, value=cnj.formatar(numero))
+    ws.cell(row=linha, column=COL_PROC_1 + 1, value=f"Cadastrado pelo robô (DJEN): {unidade}")
+    alvo = {"aba": aba, "linha": linha, "col_data": COL_DATA_1, "instancia": "1ª"}
+    mapa[cnj.digitos(numero)] = [alvo]
+    log.info("Processo novo %s cadastrado em %s linha %s", cnj.formatar(numero), aba, linha)
+    return alvo
+
+
+def trilha_djen(wb, mapa, itens, calendarios, hoje, cadastrar_novos: bool = True) -> list[dict]:
     triagem = []
     for item in itens:
         numero = str(item.get("numero_processo") or "")
         texto = str(item.get("texto") or "")
         data = ler_data(item.get("data_disponibilizacao"))
+        unidade = item.get("nomeOrgao", "Desconhecida")
         ocorrencias = mapa.get(cnj.digitos(numero))
+        novo = None
+        if not ocorrencias and cadastrar_novos:
+            novo = cadastrar_novo(wb, mapa, numero, unidade)
+            ocorrencias = mapa.get(cnj.digitos(numero))
         if ocorrencias and data:
             alvo = ocorrencias[0]
             if RE_SEGUNDO_GRAU.search(texto):
                 alvo = next((o for o in ocorrencias if o["instancia"] == "2ª"), alvo)
             if gravar_data_mais_recente(wb, alvo, data):
                 log.info("Data %s gravada: %s em %s linha %s", data, cnj.formatar(numero), alvo["aba"], alvo["linha"])
-        triagem.append(linha_triagem(data, item.get("nomeOrgao", "Desconhecida"), numero, texto, calendarios, hoje))
+        linha = linha_triagem(data, unidade, numero, texto, calendarios, hoje)
+        if novo:
+            aviso = (f"processo novo cadastrado em {novo['aba']} linha {novo['linha']}: "
+                     "conferir se é recurso ou incidente de processo já cadastrado")
+            linha["Revisar"] = "; ".join(filter(None, [linha["Revisar"], aviso]))
+        triagem.append(linha)
     return triagem
 
 
@@ -267,7 +297,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         itens = consultar_djen(sessao, cfg["djen"]["oab"], cfg["djen"]["uf"], inicio, a.hoje)
         log.info("DJEN: %s comunicações", len(itens))
-        triagem = trilha_djen(wb, mapa, itens, calendarios, a.hoje)
+        cadastrar = cfg.get("djen", "cadastrar_novos", fallback="sim").strip().lower() not in ("nao", "não", "no", "0")
+        triagem = trilha_djen(wb, mapa, itens, calendarios, a.hoje, cadastrar)
     except FalhaConsulta as e:
         log.error("DJEN falhou (%s). Acionando DataJud.", e)
         codigo = 1

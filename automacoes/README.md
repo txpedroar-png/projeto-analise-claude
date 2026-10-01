@@ -16,17 +16,15 @@ Os quatro módulos acima usam só a biblioteca padrão. Os robôs abaixo precisa
 
 | Robô | Substitui | Comando |
 |---|---|---|
-| `robo_prazos.py` | Robô de prazos v5 | `python -m automacoes.robos.robo_prazos` |
-| `resgate_emails.py` | Resgate de e-mails | `python -m automacoes.robos.resgate_emails` |
+| `robo_prazos.py` | Robô de prazos v5 **e** resgate de e-mails (cadastra processos novos achados no DJEN) | `python -m automacoes.robos.robo_prazos` |
 | `calculadora_bacen.py` | Calculadora Bacen | `python -m automacoes.robos.calculadora_bacen Calculo_Valores.xlsx --citacao 28/05/2019 --dobra` |
-| `iniciar_robos.bat` | `iniciar_robo.bat` | Agendador de Tarefas: roda o resgate e depois o robô de prazos, com log em `logs\robos.log` |
+| `iniciar_robos.bat` | `iniciar_robo.bat` | Agendador de Tarefas: roda o robô de prazos, com log em `logs\robos.log` |
 
 ### Instalação no computador do escritório (uma vez)
 
 1. Clonar o repositório **fora** da pasta do Google Drive e criar o ambiente: `python -m venv .venv`, `.venv\Scripts\activate`, `pip install -r requirements.txt`.
 2. Copiar `config_local.exemplo.ini` para `config_local.ini` e ajustar o caminho da planilha e o e-mail.
-3. Senha de app do Gmail: `setx GMAIL_SENHA_APP "senha"` (preferível) ou `senha_app = ...` na seção `[gmail]` do `config_local.ini`. Sem senha, o resgate de e-mails é pulado e o robô de prazos roda normalmente; `ativo = nao` desliga o resgate.
-4. Apontar o Agendador de Tarefas para `automacoes\robos\iniciar_robos.bat`.
+3. Apontar o Agendador de Tarefas para `automacoes\robos\iniciar_robos.bat`.
 
 Os robôs mantêm até 10 backups por robô na subpasta `backups\`, ao lado da planilha. O robô de prazos grava ao lado da planilha o `revisar_ia.txt`, só com as publicações que exigem leitura.
 
