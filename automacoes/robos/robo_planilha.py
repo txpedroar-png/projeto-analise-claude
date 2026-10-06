@@ -378,7 +378,19 @@ class PlanilhaGoogle:
     def __init__(self, id_planilha: str, credencial: str):
         import gspread  # importado aqui para os testes não dependerem da biblioteca
         self._gspread = gspread
-        self.doc = gspread.service_account(filename=credencial).open_by_key(id_planilha)
+        cliente = gspread.service_account(filename=credencial)
+        try:
+            self.doc = cliente.open_by_key(id_planilha)
+        except (PermissionError, gspread.exceptions.APIError) as e:
+            causa = str(e.__cause__ or e)
+            if "has not been used" in causa or "is disabled" in causa:
+                dica = ("a Google Sheets API não está ativada no projeto do Google Cloud. Ative-a no endereço "
+                        "indicado abaixo, aguarde alguns minutos e rode de novo.")
+            elif "404" in causa or "not found" in causa.lower():
+                dica = "a planilha não foi encontrada: confira o 'id' no config_local.ini."
+            else:
+                dica = (f"sem permissão. Compartilhe a planilha como Editor com {cliente.auth.service_account_email}.")
+            raise RuntimeError(f"Não foi possível abrir a planilha: {dica}\nDetalhe do Google: {causa}") from None
         self._abas = {}
 
     def _aba(self, nome):
