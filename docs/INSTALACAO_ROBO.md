@@ -25,17 +25,19 @@ Os comandos abaixo são para o **PowerShell** (no Prompt de Comando funcionam ig
    ainda não tem o robô). Com o navegador logado no GitHub, abra:
    <https://github.com/txpedroar-png/projeto-analise-claude/archive/refs/heads/claude/great-bell-rivb0k.zip>
    O arquivo `projeto-analise-claude-claude-great-bell-rivb0k.zip` vai para a pasta Downloads.
-3. Extraia e renomeie (se já existir uma pasta `C:\robo\projeto-analise-claude` de tentativa anterior,
-   o primeiro comando a renomeia para `projeto-antigo`, sem apagar nada):
+3. Extraia o ZIP dentro de `C:\robo` (botão direito → **Extrair tudo** → destino `C:\robo`). O nome da pasta
+   não importa: o robô se localiza sozinho. Para entrar na pasta certa, mesmo que o Windows tenha criado uma
+   pasta dentro da outra:
    ```
-   cd C:\robo
-   if (Test-Path projeto-analise-claude) { Rename-Item projeto-analise-claude projeto-antigo }
-   Expand-Archive "$env:USERPROFILE\Downloads\projeto-analise-claude-claude-great-bell-rivb0k.zip" -DestinationPath C:\robo
-   Rename-Item C:\robo\projeto-analise-claude-claude-great-bell-rivb0k projeto-analise-claude
-   cd C:\robo\projeto-analise-claude
+   $pasta = (Get-ChildItem C:\robo -Recurse -Depth 3 -Filter requirements.txt |
+             Where-Object { $_.FullName -notlike '*projeto-antigo*' -and $_.FullName -notlike '*\.venv\*' } |
+             Select-Object -First 1).DirectoryName
+   $pasta
+   cd $pasta
    dir requirements.txt, config_local.exemplo.ini
    ```
-   O último comando deve listar os dois arquivos. Se disser que não existem, pare e envie a saída de `dir`.
+   `$pasta` deve mostrar um caminho e o último comando deve listar os dois arquivos. Se `$pasta` vier vazio,
+   o ZIP ainda não foi extraído em `C:\robo`.
 4. Ambiente e configuração:
    ```
    python -m venv .venv
