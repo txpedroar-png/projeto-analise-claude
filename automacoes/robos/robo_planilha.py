@@ -22,6 +22,7 @@ import argparse
 import datetime as dt
 import re
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 
 from openpyxl.utils import get_column_letter
@@ -418,7 +419,14 @@ def main(argv: list[str] | None = None) -> int:
     configurar_log()
     cfg = carregar_config(a.config)
     g = cfg["planilha_google"]
-    robo = Robo(PlanilhaGoogle(g["id"], g["credencial"]), a.hoje, a.ensaio)
+    credencial = Path(g["credencial"])
+    if not credencial.exists():
+        duplicada = credencial.with_name(credencial.name + ".json")
+        dica = (f" Existe '{duplicada.name}': o Windows acrescentou .json duas vezes; renomeie o arquivo."
+                if duplicada.exists() else "")
+        log.error("Credencial não encontrada: %s.%s", credencial, dica)
+        return 3
+    robo = Robo(PlanilhaGoogle(g["id"], str(credencial)), a.hoje, a.ensaio)
     robo.completar_e_recalcular()
     fonte, codigo = "DJEN", 0
     try:
