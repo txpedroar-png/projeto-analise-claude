@@ -180,3 +180,24 @@ def test_modelo_alterado_aborta(planilha):
     planilha.abas["Prazos"][1] = [c if c != "Status" else "Situação" for c in planilha.abas["Prazos"][1]]
     with pytest.raises(RuntimeError, match="Status"):
         rp.Robo(planilha, HOJE)
+
+
+def test_varias_oabs_e_uniao_sem_repetir():
+    import configparser
+    cfg = configparser.ConfigParser()
+    cfg.read_string("[djen]\noab = 29573/PB, 27983/PB; 220690/RJ\nuf = PB\n")
+    assert rp.oabs_da_config(cfg["djen"]) == [("29573", "PB"), ("27983", "PB"), ("220690", "RJ")]
+    cfg.read_string("[djen]\noab = 29573\nuf = pb\n")
+    assert rp.oabs_da_config(cfg["djen"]) == [("29573", "PB")]
+    a = {"numero_processo": "1", "data_disponibilizacao": "2026-10-05", "texto": "Intime-se."}
+    b = dict(a, texto="Outro ato.")
+    assert len(rp.juntar_itens([[a, b], [dict(a)]])) == 2              # mesma comunicação nas duas OABs
+    assert len(rp.juntar_itens([[{"id": 7, **a}], [{"id": 7, **b}]])) == 1
+
+
+def test_listagem_da_leitura(planilha):
+    n1 = numero("0000001")
+    robo = rp.Robo(planilha, HOJE, ensaio=True)
+    robo.processar_djen([item(n1, "2026-10-01", "Decisão."), item(numero("0000013"), "2026-10-05", "Intime-se.")])
+    situacoes = {proc: sit for proc, _, _, sit in robo.rel.leitura}
+    assert situacoes == {n1: "já na planilha", numero("0000013"): "NOVA"}

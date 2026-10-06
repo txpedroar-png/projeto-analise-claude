@@ -123,6 +123,7 @@ class Relatorio:
     processos_novos: int = 0
     publicacoes: int = 0
     comarcas_atualizadas: int = 0
+    leitura: list = field(default_factory=list)
     para_revisao: int = 0
     lidas: int = 0
     erros: list[str] = field(default_factory=list)
@@ -379,6 +380,7 @@ class Robo:
             disp = para_data(str(item.get("data_disponibilizacao") or "")[:10])
             if len(d) != 20 or not disp:
                 self.rel.erros.append(f"item do DJEN sem processo ou data: {str(item)[:80]}")
+                self.rel.leitura.append((str(item.get("numero_processo") or "?"), disp, "", "IGNORADA: sem processo ou data"))
                 continue
             texto = " ".join(str(item.get("texto") or "").split())
             orgao = str(item.get("nomeOrgao") or "")
@@ -392,7 +394,9 @@ class Robo:
                                        "Órgão julgador": orgao, "Processo": cnj.formatar(d), "Tipo de ato": tipo,
                                        "Teor / resumo": texto[:1500], "Fonte": "DJEN (robô)"})
             if (d, pub) in existentes_pub:
+                self.rel.leitura.append((cnj.formatar(d), disp, orgao, "já na planilha"))
                 continue
+            self.rel.leitura.append((cnj.formatar(d), disp, orgao, "NOVA"))
             self.registrar_processo(cnj.formatar(d), trib, comarca, orgao)
             criminal = "criminal" in orgao.lower()
             for natureza, dias, motivos in self.prazos_do_ato(texto, tipo, orgao):
@@ -437,6 +441,35 @@ class Robo:
                  self.rel.novas + self.rel.completadas, self.rel.para_revisao, " | ".join(self.rel.erros)[:500], VERSAO]
         if not self.ensaio:
             self.p.atualizar("Auditoria", [{"range": f"A{n}:G{n}", "values": [[celula(v) for v in linha]]}])
+
+
+def oabs_da_config(secao) -> list[tuple[str, str]]:
+    """'oab = 29573/PB, 27983/PB' (ou só '29573' com 'uf = PB') -> [(numero, UF)]."""
+    uf_padrao = secao.get("uf", "").strip().upper()
+    lista = []
+    for parte in re.split(r"[,;]", secao.get("oab", "")):
+        parte = parte.strip()
+        if not parte:
+            continue
+        numero, _, uf = parte.partition("/")
+        lista.append((re.sub(r"\D", "", numero), (uf.strip() or uf_padrao).upper()))
+    if not lista:
+        raise RuntimeError("Informe ao menos uma OAB em [djen] oab no config_local.ini.")
+    return lista
+
+
+def juntar_itens(listas: list[list[dict]]) -> list[dict]:
+    """Une as consultas de várias OABs sem repetir a mesma comunicação."""
+    vistos, itens = set(), []
+    for lista in listas:
+        for item in lista:
+            chave = item.get("id") or (cnj.digitos(str(item.get("numero_processo") or "")),
+                                       str(item.get("data_disponibilizacao") or "")[:10],
+                                       " ".join(str(item.get("texto") or "").split())[:200])
+            if chave not in vistos:
+                vistos.add(chave)
+                itens.append(item)
+    return itens
 
 
 def _indice(letra: str) -> int:
@@ -507,6 +540,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--config")
     p.add_argument("--ensaio", action="store_true", help="mostra o que faria, sem gravar nada")
     p.add_argument("--hoje", type=dt.date.fromisoformat, default=dt.date.today())
+    p.add_argument("--listar", action="store_true", help="lista todas as publicações lidas e o que foi feito com cada uma")
     a = p.parse_args(argv)
     configurar_log()
     cfg = carregar_config(a.config)
@@ -524,9 +558,12 @@ def main(argv: list[str] | None = None) -> int:
     fonte, codigo = "DJEN", 0
     try:
         dias = cfg.getint("djen", "dias_busca", fallback=15)
-        itens = consultar_djen(requests.Session(), cfg["djen"]["oab"], cfg["djen"]["uf"],
-                               a.hoje - dt.timedelta(days=dias), a.hoje)
-        robo.processar_djen(itens)
+        sessao, listas = requests.Session(), []
+        for numero, uf in oabs_da_config(cfg["djen"]):
+            lista = consultar_djen(sessao, numero, uf, a.hoje - dt.timedelta(days=dias), a.hoje)
+            log.info("DJEN OAB %s/%s: %s comunicações", numero, uf, len(lista))
+            listas.append(lista)
+        robo.processar_djen(juntar_itens(listas))
     except FalhaConsulta as e:
         fonte, codigo = "DJEN indisponível", 1
         robo.rel.erros.append(f"DJEN: {e}")
@@ -534,6 +571,9 @@ def main(argv: list[str] | None = None) -> int:
     robo.atualizar_painel()
     robo.registrar_execucao(fonte)
     r = robo.rel
+    if a.listar:
+        for numero, disp, orgao, situacao in sorted(r.leitura, key=lambda x: (str(x[1]), x[0])):
+            log.info("LIDA %s | disp. %s | %s | %s", numero, disp.strftime("%d/%m/%Y") if disp else "?", orgao[:45], situacao)
     for acao in r.acoes:
         log.info(("[ENSAIO] " if a.ensaio else "") + acao)
     log.info("%sLidas %s | novas %s | completadas %s | recalculadas %s | processos novos %s | "
