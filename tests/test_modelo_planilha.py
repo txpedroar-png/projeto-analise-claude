@@ -81,3 +81,19 @@ def test_migracao_e_modelo(tmp_path):
     proc = wb["Processos"]
     clientes = {proc.cell(r, 4).value: proc.cell(r, 5).value for r in range(2, 4)}
     assert clientes[n1] == "Fulana"
+
+
+def test_compatibilidade_excel(tmp_path):
+    """O Excel removeu fórmulas SORT/FILTER gravadas sem metadados de matriz dinâmica: proibir."""
+    origem, *_ = origem_ficticia(tmp_path)
+    gm.gerar(origem, tmp_path / "v2.xlsx", D("2026-10-06"))
+    wb = load_workbook(tmp_path / "v2.xlsx")
+    formulas = [c.value for ws in wb for row in ws.iter_rows() for c in row
+                if isinstance(c.value, str) and c.value.startswith("=")]
+    assert not any(f in x for x in formulas for f in ("SORT(", "FILTER(", "UNIQUE(", "XLOOKUP("))
+    assert all("_xlfn.MINIFS(" in x for x in formulas if "MINIFS(" in x)
+    for ws in wb:
+        for dv in ws.data_validations.dataValidation:
+            assert len(dv.formula1) <= 255, (ws.title, dv.sqref)
+    vista = wb["Vista TJPB"]
+    assert vista["A3"].value.startswith('=IFERROR(MATCH("TJPB#"')

@@ -346,7 +346,7 @@ PRAZOS_COLS = [
     ("Status", 22, 3), ("Data do protocolo", 12, 3), ("Folga no protocolo (d.u.)", 9, 3),
     ("Observações da equipe", 40, 3), ("Link minuta / pasta", 18, 3),
     ("Área / nicho", 16, 4), ("Instância", 10, 4), ("Conferência", 40, 4), ("Teor / resumo do ato", 50, 4),
-    ("Fonte", 16, 4), ("Status anterior (migração)", 16, 4), ("ID", 30, 4),
+    ("Fonte", 16, 4), ("Status anterior (migração)", 16, 4), ("ID", 30, 4), ("Chave da vista (auxiliar)", 10, 4),
 ]
 BLOCOS = [("IDENTIFICAÇÃO", AZUL), ("PRAZOS (interno conservador + termo legal)", BRONZE),
           ("PROVIDÊNCIA", AZUL2), ("GESTÃO DA EQUIPE", BRONZE2), ("CLASSIFICAÇÃO, CONFERÊNCIA E MEMÓRIA", CINZA)]
@@ -416,6 +416,11 @@ def aba_prazos(wb, prazos, hoje, linhas_extra=25):
         ws[f"{L['Folga no protocolo (d.u.)']}{r}"] = (
             f'=IF(OR({q}="",{t}=""),"",IF({q}<={t},NETWORKDAYS({q},{t},{FERIADOS})-1,'
             f'-(NETWORKDAYS({t},{q},{FERIADOS})-1)))')
+        # Numera as pendências de cada tribunal na ordem da base: "TJPB#1", "TJPB#2"... (usada pelas Vistas).
+        a, m, pr = L["Tribunal"], L["Criticidade"], L["Processo"]
+        ws[f"{L['Chave da vista (auxiliar)']}{r}"] = (
+            f'=IF(OR({pr}{r}="",{m}{r}="—"),"",{a}{r}&"#"&COUNTIFS({a}$3:{a}{r},{a}{r},{m}$3:{m}{r},"<>—",'
+            f'{pr}$3:{pr}{r},"<>"))')
         for nome in ("Disponibilização", "Publicação", "Vencimento interno", "Termo legal", "Data do protocolo"):
             ws[f"{L[nome]}{r}"].number_format = DATA
         for nome in ("Providência", "Observações da equipe", "Conferência", "Teor / resumo do ato"):
@@ -467,7 +472,7 @@ def aba_processos(wb, processos, linhas_extra=20):
         d = f"{pc['Processo']}{r}"
         ws[f"{pc['Prazos registrados']}{r}"] = f'=IF({d}="","",COUNTIF(Prazos!$D:$D,{d}))'
         ws[f"{pc['Próximo vencimento interno']}{r}"] = (
-            f'=IF({d}="","",IFERROR(1/(1/MINIFS(Prazos!$J:$J,Prazos!$D:$D,{d},Prazos!$J:$J,">="&TODAY())),""))')
+            f'=IF({d}="","",IFERROR(1/(1/_xlfn.MINIFS(Prazos!$J:$J,Prazos!$D:$D,{d},Prazos!$J:$J,">="&TODAY())),""))')
         ws[f"{pc['Próximo vencimento interno']}{r}"].number_format = DATA
         ws[f"{pc['Valor da causa (R$)']}{r}"].number_format = '"R$" #,##0.00'
     validacao(ws, AREAS, f"{pc['Área / nicho']}2:{pc['Área / nicho']}{ultima}")
@@ -568,23 +573,33 @@ def aba_comarcas(wb):
                 "Conferir: código não confirmado pelos órgãos registrados")
 
 
-def aba_vista(wb, tribunal):
+def aba_vista(wb, tribunal, linhas=200):
+    """Pendências do tribunal na ordem da base (comarca, vencimento), por ÍNDICE/CORRESP: funciona no
+    Excel, no LibreOffice e no Google Sheets, sem funções de matriz dinâmica."""
     ws = wb.create_sheet(f"Vista {tribunal}")
     ws.sheet_properties.tabColor = AZUL
     ws["A1"] = (f"{tribunal}: prazos e atos pendentes, por comarca e vencimento interno. Somente leitura: "
                 "edite na aba Prazos (esta vista se atualiza sozinha).")
     ws["A1"].font = Font(bold=True, color=AZUL)
-    ws.merge_cells("A1:O1")
-    cols = PRAZOS_COLS[1:16]  # Comarca ... Status
-    cabecalho(ws, [(n, w) for n, w, _ in cols], linha=2)
-    a, f = "B", get_column_letter(16)
+    ws.merge_cells("A1:P1")
+    ultima_col = PRAZOS_COLS.index(next(c for c in PRAZOS_COLS if c[0] == "Status")) + 1
+    cabecalho(ws, [("Linha na base", 6)] + [(n, w) for n, w, _ in PRAZOS_COLS[1:ultima_col]], linha=2)
+    chave = col("Chave da vista (auxiliar)")
+    datas = {col(n) for n in ("Disponibilização", "Publicação", "Vencimento interno", "Termo legal")}
+    for r in range(3, 3 + linhas):
+        ws[f"A{r}"] = f'=IFERROR(MATCH("{tribunal}#"&(ROW()-2),Prazos!${chave}:${chave},0),"")'
+        for i in range(2, ultima_col + 1):
+            x = get_column_letter(i)
+            ws[f"{x}{r}"] = f'=IF($A{r}="","",IF(INDEX(Prazos!{x}:{x},$A{r})="","",INDEX(Prazos!{x}:{x},$A{r})))'
+            if x in datas:
+                ws[f"{x}{r}"].number_format = DATA
     crit = col("Criticidade")
-    ws["A3"] = (f'=IFERROR(SORT(FILTER(Prazos!{a}3:{f}2000,Prazos!A3:A2000="{tribunal}",'
-                f'Prazos!{crit}3:{crit}2000<>"—",Prazos!D3:D2000<>""),1,TRUE,9,TRUE),"Sem pendências")')
-    for letra in ("E", "F", "I", "J"):
-        for r in range(3, 160):
-            ws[f"{letra}{r}"].number_format = DATA
-    ws.freeze_panes = "A3"
+    for valor, cor, fonte in (("VENCIDO", "F4CCCC", "990000"), ("VENCE HOJE", "F4CCCC", "990000"),
+                              ("URGENTE", "FFF2CC", "7F6000"), ("NORMAL", "D9EAD3", "274E13"),
+                              ("VERIFICAR", "FCE5CD", "783F04")):
+        ws.conditional_formatting.add(f"{crit}3:{crit}{2 + linhas}", FormulaRule(
+            formula=[f'${crit}3="{valor}"'], fill=preencher(cor), font=Font(color=fonte, bold=True)))
+    ws.freeze_panes = "E3"
 
 
 def aba_painel(wb, combinacoes, hoje):
@@ -633,7 +648,7 @@ def aba_painel(wb, combinacoes, hoje):
         ws.cell(r, 4, f'=COUNTIFS({filtro},{C},"URGENTE")+COUNTIFS({filtro},{C},"VENCE HOJE")')
         ws.cell(r, 5, f'=COUNTIFS({filtro},{C},"VENCIDO")')
         ws.cell(r, 6, f'=COUNTIFS({filtro},{C},"VERIFICAR")')
-        ws.cell(r, 7, f'=IFERROR(1/(1/MINIFS({Jv},{A},$A{r},{B},$B{r},{Jv},">="&TODAY())),"")').number_format = DATA
+        ws.cell(r, 7, f'=IFERROR(1/(1/_xlfn.MINIFS({Jv},{A},$A{r},{B},$B{r},{Jv},">="&TODAY())),"")').number_format = DATA
     r = base + len(combinacoes) + 2
     ws.cell(r, 1, "Acesso aos sistemas").font = Font(bold=True, color=AZUL)
     portais = [("TJPB – PJe", "https://www.tjpb.jus.br/pje"), ("TJRN – PJe", "https://www.tjrn.jus.br"),
