@@ -89,3 +89,10 @@ Envie o log para conferência antes de rodar de verdade.
 - Feriado municipal de unidade unificada: na aba Feriados, abrangência `TJPB:Santa Rita/Bayeux` (vale para
   todos os códigos absorvidos). Também funciona por código: `TJPB:0751`.
 - Unidade nova ganha linha automática no quadro por comarca do Painel.
+
+## Atualizar o robô
+
+Na pasta do projeto, um comando baixa a versão nova e preserva `.venv`, `config_local.ini` e logs:
+```
+powershell -ExecutionPolicy Bypass -File automacoes\atualizar.ps1
+```
