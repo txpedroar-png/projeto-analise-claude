@@ -17,25 +17,41 @@ horários agendados e use a internet do escritório (o DJEN recusa conexões de 
 
 ## 2. Python e o repositório (≈ 15 min)
 
+Os comandos abaixo são para o **PowerShell** (no Prompt de Comando funcionam iguais, exceto onde indicado).
+
 1. Instale o Python 3.11 ou mais novo em <https://www.python.org/downloads/>.
    Na primeira tela do instalador, marque **"Add python.exe to PATH"**.
-2. Baixe o repositório `projeto-analise-claude` do GitHub (botão **Code → Download ZIP**) e extraia em
-   `C:\robo\projeto-analise-claude`. (Fora do Google Drive.)
-3. Abra o **Prompt de Comando** e rode:
+2. Baixe o código **do ramo do robô** (o botão "Download ZIP" da página inicial baixa o ramo principal, que
+   ainda não tem o robô). Com o navegador logado no GitHub, abra:
+   <https://github.com/txpedroar-png/projeto-analise-claude/archive/refs/heads/claude/great-bell-rivb0k.zip>
+   O arquivo `projeto-analise-claude-claude-great-bell-rivb0k.zip` vai para a pasta Downloads.
+3. Extraia e renomeie (se já existir uma pasta `C:\robo\projeto-analise-claude` de tentativa anterior,
+   o primeiro comando a renomeia para `projeto-antigo`, sem apagar nada):
    ```
+   cd C:\robo
+   if (Test-Path projeto-analise-claude) { Rename-Item projeto-analise-claude projeto-antigo }
+   Expand-Archive "$env:USERPROFILE\Downloads\projeto-analise-claude-claude-great-bell-rivb0k.zip" -DestinationPath C:\robo
+   Rename-Item C:\robo\projeto-analise-claude-claude-great-bell-rivb0k projeto-analise-claude
    cd C:\robo\projeto-analise-claude
+   dir requirements.txt, config_local.exemplo.ini
+   ```
+   O último comando deve listar os dois arquivos. Se disser que não existem, pare e envie a saída de `dir`.
+4. Ambiente e configuração:
+   ```
    python -m venv .venv
    .venv\Scripts\pip install -r requirements.txt
    copy config_local.exemplo.ini config_local.ini
+   notepad config_local.ini
    ```
-4. Abra `config_local.ini` no Bloco de Notas e confira `id`, `credencial`, `oab` e `uf`.
+   No Bloco de Notas, confira `id`, `credencial`, `oab` e `uf`, e salve.
 
 ## 3. Ensaio (sem gravar nada)
 
 ```
-automacoes\robos\iniciar_robos.bat ensaio
-type logs\robo_planilha.log
+.\automacoes\robos\iniciar_robos.bat ensaio
+Get-Content logs\robo_planilha.log
 ```
+(No PowerShell o `.\` no início é obrigatório; no Prompt de Comando, use `type` no lugar de `Get-Content`.)
 O log mostra o que o robô **faria**: linhas que inseriria, prazos calculados e processos novos.
 Envie o log para conferência antes de rodar de verdade.
 
@@ -44,7 +60,7 @@ Envie o log para conferência antes de rodar de verdade.
 
 ## 4. Execução real e agendamento
 
-1. Rode uma vez: `automacoes\robos\iniciar_robos.bat` e confira a planilha (aba Prazos e a aba Auditoria,
+1. Rode uma vez: `.\automacoes\robos\iniciar_robos.bat` e confira a planilha (aba Prazos e a aba Auditoria,
    bloco "Registro de execuções do robô").
 2. **Agendador de Tarefas → Criar tarefa básica** → diariamente às **07:30** → Ação: Iniciar programa →
    `C:\robo\projeto-analise-claude\automacoes\robos\iniciar_robos.bat`.
