@@ -29,8 +29,10 @@ from openpyxl.utils import get_column_letter
 
 from automacoes import cnj
 from automacoes.planilha.gerar_modelo import (
-    ORDEM_TRIBUNAIS, STATUS_ENCERRADOS, formulas_processos, formulas_prazos, identificador, instancia,
+    COMARCAS, ORDEM_TRIBUNAIS, STATUS_ENCERRADOS, UNIDADE_ATUAL, formulas_processos, formulas_prazos, identificador,
+    instancia, linha_painel_comarca,
 )
+from automacoes.unidades import Unidades, unidade_pelo_orgao
 from automacoes.prazos import Calendario, calcular_prazo
 from automacoes.robos.comum import carregar_config, configurar_log, log
 from automacoes.triagem import detectar_prazo, tipo_ato
@@ -120,6 +122,7 @@ class Relatorio:
     recalculadas: int = 0
     processos_novos: int = 0
     publicacoes: int = 0
+    comarcas_atualizadas: int = 0
     para_revisao: int = 0
     lidas: int = 0
     erros: list[str] = field(default_factory=list)
@@ -140,20 +143,95 @@ class Robo:
             {"data": para_data(f["Data"]), "descricao": f.get("Descrição", ""), "abrangencia": f.get("Abrangência", ""),
              "tipo": f.get("Tipo", ""), "conferido": f.get("Conferido", "")}
             for f in feriados.linhas if para_data(f.get("Data"))]
-        comarcas = Aba("Comarcas", planilha.ler("Comarcas"), LINHA_CAB_OUTRAS)
-        self.comarcas = {(str(c["Tribunal"]), str(c["Código de origem"]).zfill(4)): str(c["Comarca"])
-                         for c in comarcas.linhas if c.get("Tribunal")}
+        self.aba_comarcas = Aba("Comarcas", planilha.ler("Comarcas"), LINHA_CAB_OUTRAS)
+        self.unidades = Unidades(self.aba_comarcas.linhas)
         self.calendarios: dict = {}
 
     # ---------------------------------------------------------- utilidades
-    def calendario(self, tribunal: str, comarca_cod: str) -> Calendario:
-        chave = (tribunal, comarca_cod)
+    def calendario(self, tribunal: str, comarca_cod: str, orgao: str = "") -> Calendario:
+        unidade = self.comarca(tribunal, comarca_cod, orgao)
+        chave = (tribunal, comarca_cod, unidade)
         if chave not in self.calendarios:
-            self.calendarios[chave] = Calendario.de_registros(self.registros_feriados, tribunal or "TJPB", comarca_cod)
+            self.calendarios[chave] = Calendario.de_registros(self.registros_feriados, tribunal or "TJPB", comarca_cod,
+                                                              unidade=unidade)
         return self.calendarios[chave]
 
-    def comarca(self, tribunal: str, cod: str) -> str:
-        return self.comarcas.get((tribunal, cod), f"Cód. {cod}")
+    def comarca(self, tribunal: str, cod: str, orgao: str = "") -> str:
+        """Unidade atual (órgão julgador > aba Comarcas > 'Cód. NNNN'); ver automacoes/unidades.py."""
+        return self.unidades.resolver(tribunal, cod, orgao)
+
+    # ---------------------------------------------------------- 0. unidades (Comarcas)
+    def _anexar_comarca(self, valores: dict) -> None:
+        aba = self.aba_comarcas
+        n = max([l["_n"] for l in aba.linhas] or [1]) + 1
+        linha = self.linha_completa(aba, valores, {})
+        self.rel.acoes.append(f"Comarcas: linha {n}: " + " | ".join(str(v) for v in valores.values()))
+        if not self.ensaio:
+            self.p.atualizar("Comarcas", [{"range": f"A{n}:{get_column_letter(aba.ncols)}{n}", "values": [linha]}])
+        aba.linhas.append({"_n": n, **valores})
+
+    def registrar_codigo(self, tribunal: str, cod: str, orgao: str) -> None:
+        """Código de origem novo vai para a aba Comarcas, para a equipe conferir."""
+        if not tribunal or self.unidades.conhece(tribunal, cod):
+            return
+        self._anexar_comarca({"Tribunal": tribunal, "Código de origem": cod,
+                              "Comarca": unidade_pelo_orgao(orgao, tribunal) or "", "Conferido": "N",
+                              "Observação": f"Incluído pelo robô em {self.hoje:%d/%m/%Y}; órgão: {orgao or 'não informado'}"})
+        self.unidades = Unidades(self.aba_comarcas.linhas)
+
+    def atualizar_unidades(self) -> None:
+        """Garante a coluna 'Unidade atual', registra as unificações conhecidas e corrige a coluna Comarca
+        das linhas existentes (coluna do robô; não mexe nas colunas da equipe)."""
+        aba = self.aba_comarcas
+        if "Unidade atual" not in aba.letra:
+            aba.ncols += 1
+            aba.letra["Unidade atual"] = get_column_letter(aba.ncols)
+            self.gravar(aba, aba.linha_cab, {"Unidade atual": "Unidade atual"})
+        for (trib, cod), atual in UNIDADE_ATUAL.items():
+            linha = next((l for l in aba.linhas if str(l.get("Tribunal")) == trib and
+                          str(l.get("Código de origem") or "").split(".")[0].zfill(4) == cod), None)
+            if linha is None:
+                self._anexar_comarca({"Tribunal": trib, "Código de origem": cod,
+                                      "Comarca": COMARCAS.get((trib, cod), ("", "N"))[0], "Conferido": "N",
+                                      "Observação": "Unificada (informação do escritório; registrar o ato normativo)",
+                                      "Unidade atual": atual})
+            elif not str(linha.get("Unidade atual") or "").strip():
+                self.gravar(aba, linha["_n"], {"Unidade atual": atual})
+                linha["Unidade atual"] = atual
+        self.unidades = Unidades(aba.linhas)
+        for tabela in (self.prazos, self.processos):
+            for linha in tabela.linhas:
+                d = cnj.digitos(str(linha.get("Processo") or ""))
+                if len(d) != 20:
+                    continue
+                trib, cod = cnj.tribunal(d) or str(linha.get("Tribunal") or ""), cnj.comarca(d)
+                orgao = str(linha.get("Órgão julgador") or "")
+                self.registrar_codigo(trib, cod, orgao)
+                nova = self.comarca(trib, cod, orgao)
+                if nova != str(linha.get("Comarca") or ""):
+                    self.gravar(tabela, linha["_n"], {"Comarca": nova})
+                    linha["Comarca"] = nova
+                    self.rel.comarcas_atualizadas += 1
+
+    def atualizar_painel(self) -> None:
+        """Acrescenta ao quadro por tribunal/comarca do Painel as unidades que ainda não têm linha."""
+        valores = self.p.ler("Painel")
+        cab = next((i for i, l in enumerate(valores, 1) if len(l) > 1 and l[0] == "Tribunal" and l[1] == "Comarca"), None)
+        if cab is None:
+            return
+        fim, existentes = cab, set()
+        while fim < len(valores) and valores[fim] and str(valores[fim][0]).strip():
+            existentes.add((str(valores[fim][0]), str(valores[fim][1])))
+            fim += 1
+        faltando = sorted({(str(l.get("Tribunal")), str(l.get("Comarca"))) for l in self.prazos.linhas
+                           if l.get("Processo") and l.get("Tribunal")} - existentes,
+                          key=lambda x: (ORDEM_TRIBUNAIS.index(x[0]) if x[0] in ORDEM_TRIBUNAIS else 99, x[1]))
+        for trib, comarca in faltando:
+            fim += 1
+            linha = linha_painel_comarca(fim, trib, comarca, self.prazos.letra)
+            self.rel.acoes.append(f"Painel: linha {fim}: {trib} – {comarca}")
+            if not self.ensaio:
+                self.p.inserir_linhas("Painel", fim, [linha], herdar_formato_de_cima=True)
 
     def gravar(self, aba: Aba, linha: int, valores: dict) -> None:
         """Atualiza só as colunas indicadas da linha."""
@@ -185,7 +263,8 @@ class Robo:
                 continue
             d = cnj.digitos(numero)
             trib = cnj.tribunal(d) or str(linha.get("Tribunal") or "")
-            r = calcular_prazo(disp, dias, self.calendario(trib, cnj.comarca(d)), self.hoje)
+            orgao = str(linha.get("Órgão julgador") or "")
+            r = calcular_prazo(disp, dias, self.calendario(trib, cnj.comarca(d), orgao), self.hoje)
             interno, legal = dt.date.fromisoformat(r.vencimento_interno), dt.date.fromisoformat(r.termo_legal)
             if venc_atual == interno and para_data(linha.get("Termo legal")) == legal:
                 continue
@@ -195,9 +274,9 @@ class Robo:
                 if not linha.get("Tribunal"):
                     valores["Tribunal"] = trib
                 if not linha.get("Comarca"):
-                    valores["Comarca"] = self.comarca(trib, cnj.comarca(d))
+                    valores["Comarca"] = self.comarca(trib, cnj.comarca(d), orgao)
                 if not linha.get("Publicação"):
-                    valores["Publicação"] = self.calendario(trib, cnj.comarca(d)).somar_dias_uteis(disp, 1)
+                    valores["Publicação"] = self.calendario(trib, cnj.comarca(d), orgao).somar_dias_uteis(disp, 1)
                 if not linha.get("Fonte"):
                     valores["Fonte"] = "Manual (completado pelo robô)"
                 if not linha.get("ID"):
@@ -304,9 +383,10 @@ class Robo:
             texto = " ".join(str(item.get("texto") or "").split())
             orgao = str(item.get("nomeOrgao") or "")
             trib, cod = cnj.tribunal(d) or "", cnj.comarca(d)
-            cal = self.calendario(trib, cod)
+            self.registrar_codigo(trib, cod, orgao)
+            cal = self.calendario(trib, cod, orgao)
             pub = cal.somar_dias_uteis(disp, 1)
-            comarca = self.comarca(trib, cod)
+            comarca = self.comarca(trib, cod, orgao)
             tipo = tipo_ato(texto)
             self.registrar_publicacao({"Publicação": pub, "Disponibilização": disp, "Tribunal": trib,
                                        "Órgão julgador": orgao, "Processo": cnj.formatar(d), "Tipo de ato": tipo,
@@ -439,6 +519,7 @@ def main(argv: list[str] | None = None) -> int:
         log.error("Credencial não encontrada: %s.%s", credencial, dica)
         return 3
     robo = Robo(PlanilhaGoogle(g["id"], str(credencial)), a.hoje, a.ensaio)
+    robo.atualizar_unidades()
     robo.completar_e_recalcular()
     fonte, codigo = "DJEN", 0
     try:
@@ -450,13 +531,15 @@ def main(argv: list[str] | None = None) -> int:
         fonte, codigo = "DJEN indisponível", 1
         robo.rel.erros.append(f"DJEN: {e}")
         log.error("DJEN falhou: %s. Prazos já existentes foram completados/recalculados; nada novo inserido.", e)
+    robo.atualizar_painel()
     robo.registrar_execucao(fonte)
     r = robo.rel
     for acao in r.acoes:
         log.info(("[ENSAIO] " if a.ensaio else "") + acao)
     log.info("%sLidas %s | novas %s | completadas %s | recalculadas %s | processos novos %s | "
-             "publicações %s | para revisão %s | erros %s", "[ENSAIO] " if a.ensaio else "", r.lidas, r.novas,
-             r.completadas, r.recalculadas, r.processos_novos, r.publicacoes, r.para_revisao, len(r.erros))
+             "publicações %s | para revisão %s | comarcas atualizadas %s | erros %s", "[ENSAIO] " if a.ensaio else "",
+             r.lidas, r.novas, r.completadas, r.recalculadas, r.processos_novos, r.publicacoes, r.para_revisao,
+             r.comarcas_atualizadas, len(r.erros))
     return codigo
 
 

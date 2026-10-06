@@ -53,11 +53,15 @@ RESULTADOS = [
 ]
 ORDEM_TRIBUNAIS = ["TJPB", "TJRN", "TJPE", "TJCE", "TJSP", "TJPR"]
 
+# Unidades unificadas: código de origem -> unidade atual (informado pelo escritório; conferir o ato normativo).
+UNIDADE_ATUAL = {("TJPB", "0121"): "Santa Rita/Bayeux", ("TJPB", "0751"): "Santa Rita/Bayeux"}
 # Código de origem (4 últimos dígitos do CNJ) -> comarca. "S" = coerente com os órgãos
 # julgadores da planilha anterior; "N" = conferir.
 COMARCAS = {
     ("TJPB", "0000"): ("TJPB – 2º grau (originário)", "S"),
     ("TJPB", "0001"): ("Campina Grande", "S"),
+    ("TJPB", "0121"): ("Santa Rita", "S"),
+    ("TJPB", "0751"): ("Bayeux", "S"),
     ("TJPB", "0231"): ("Mamanguape", "S"),
     ("TJPB", "0261"): ("Piancó", "S"),
     ("TJPB", "0521"): ("Alagoinha", "S"),
@@ -657,7 +661,7 @@ def aba_comarcas(wb):
     ws = wb.create_sheet("Comarcas")
     ws.sheet_properties.tabColor = CINZA
     cabecalho(ws, [("Tribunal", 9), ("Código de origem", 10), ("Comarca", 40), ("Conferido", 10),
-                   ("Observação", 50)], cor=CINZA)
+                   ("Observação", 50), ("Unidade atual", 30)], cor=CINZA)
     for r, ((t, c), (nome, conf)) in enumerate(sorted(COMARCAS.items(), key=lambda x: (ordem_tribunal(x[0][0]), x[0][1])), 2):
         ws.cell(r, 1, t)
         ws.cell(r, 2, c)
@@ -665,6 +669,9 @@ def aba_comarcas(wb):
         ws.cell(r, 4, conf)
         ws.cell(r, 5, "Deduzido dos órgãos julgadores registrados" if conf == "S" else
                 "Conferir: código não confirmado pelos órgãos registrados")
+        if (t, c) in UNIDADE_ATUAL:
+            ws.cell(r, 6, UNIDADE_ATUAL[(t, c)])
+            ws.cell(r, 5, "Unificada (informação do escritório; registrar o ato normativo)")
 
 
 def aba_vista(wb, tribunal, linhas=200):
@@ -694,6 +701,20 @@ def aba_vista(wb, tribunal, linhas=200):
         ws.conditional_formatting.add(f"{crit}3:{crit}{2 + linhas}", FormulaRule(
             formula=[f'${crit}3="{valor}"'], fill=preencher(cor), font=Font(color=fonte, bold=True)))
     ws.freeze_panes = "E3"
+
+
+def linha_painel_comarca(r: int, tribunal: str, comarca: str, L: dict) -> list:
+    """Linha do quadro por tribunal/comarca do Painel (usada pelo gerador e pelo robô)."""
+    A, B = f"Prazos!${L['Tribunal']}:${L['Tribunal']}", f"Prazos!${L['Comarca']}:${L['Comarca']}"
+    C = f"Prazos!${L['Criticidade']}:${L['Criticidade']}"
+    Jv = f"Prazos!${L['Vencimento interno']}:${L['Vencimento interno']}"
+    filtro = f'{A},$A{r},{B},$B{r}'
+    return [tribunal, comarca,
+            f'=COUNTIFS({filtro},{C},"<>—",{C},"<>VERIFICAR")',
+            f'=COUNTIFS({filtro},{C},"URGENTE")+COUNTIFS({filtro},{C},"VENCE HOJE")',
+            f'=COUNTIFS({filtro},{C},"VENCIDO")',
+            f'=COUNTIFS({filtro},{C},"VERIFICAR")',
+            f'=IFERROR(1/(1/_xlfn.MINIFS({Jv},{A},$A{r},{B},$B{r},{Jv},">="&TODAY())),"")']
 
 
 def aba_painel(wb, combinacoes, hoje):
@@ -738,17 +759,10 @@ def aba_painel(wb, combinacoes, hoje):
     for i, t in enumerate(cab, 1):
         c = ws.cell(base, i, t)
         c.font, c.fill, c.alignment = BRANCO, preencher(BRONZE), CENTRO
-    A, B = "Prazos!$A:$A", "Prazos!$B:$B"
-    Jv = f"Prazos!${col('Vencimento interno')}:${col('Vencimento interno')}"
     for r, (trib, comarca) in enumerate(combinacoes, base + 1):
-        ws.cell(r, 1, trib)
-        ws.cell(r, 2, comarca)
-        filtro = f'{A},$A{r},{B},$B{r}'
-        ws.cell(r, 3, f'=COUNTIFS({filtro},{C},"<>—",{C},"<>VERIFICAR")')
-        ws.cell(r, 4, f'=COUNTIFS({filtro},{C},"URGENTE")+COUNTIFS({filtro},{C},"VENCE HOJE")')
-        ws.cell(r, 5, f'=COUNTIFS({filtro},{C},"VENCIDO")')
-        ws.cell(r, 6, f'=COUNTIFS({filtro},{C},"VERIFICAR")')
-        ws.cell(r, 7, f'=IFERROR(1/(1/_xlfn.MINIFS({Jv},{A},$A{r},{B},$B{r},{Jv},">="&TODAY())),"")').number_format = DATA
+        for i, v in enumerate(linha_painel_comarca(r, trib, comarca, LP), 1):
+            ws.cell(r, i, v)
+        ws.cell(r, 7).number_format = DATA
     r = base + len(combinacoes) + 2
     ws.cell(r, 1, "Acesso aos sistemas").font = Font(bold=True, color=AZUL)
     portais = [("TJPB – PJe", "https://www.tjpb.jus.br/pje"), ("TJRN – PJe", "https://www.tjrn.jus.br"),

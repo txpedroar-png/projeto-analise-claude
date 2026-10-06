@@ -65,10 +65,11 @@ class Calendario:
 
     @classmethod
     def de_registros(cls, registros: list[dict], tribunal: str = "TJPB", comarca: str | None = None,
-                     origem: str = "aba Feriados") -> "Calendario":
+                     origem: str = "aba Feriados", unidade: str | None = None) -> "Calendario":
         """Mesmo calendário a partir de dicionários (ex.: linhas da aba Feriados da planilha).
         'data' aceita date/datetime ou texto AAAA-MM-DD / DD/MM/AAAA."""
         cal = cls.__new__(cls)
+        cal.unidade = unidade
         cal._carregar(registros, origem, tribunal, comarca)
         return cal
 
@@ -94,8 +95,10 @@ class Calendario:
     def _aplica(self, abrangencia: str) -> bool:
         if abrangencia == "NACIONAL" or abrangencia == self.tribunal:
             return True
-        # Feriado municipal: "TJPB:0231" (código de origem = 4 últimos dígitos do CNJ).
-        return self.comarca is not None and abrangencia == f"{self.tribunal}:{self.comarca}"
+        # Feriado municipal: "TJPB:0231" (código de origem = 4 últimos dígitos do CNJ) ou
+        # "TJPB:SANTA RITA/BAYEUX" (unidade atual, para unidades unificadas).
+        ids = {self.comarca, (getattr(self, "unidade", None) or "").upper()} - {None, ""}
+        return any(abrangencia == f"{self.tribunal}:{i}" for i in ids)
 
     @staticmethod
     def em_recesso(d: dt.date) -> bool:

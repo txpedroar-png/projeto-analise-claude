@@ -77,3 +77,15 @@ Envie o log para conferência antes de rodar de verdade.
   Observações da equipe.
 - Feriado confirmado: marque **Conferido = S** na aba Feriados (com a fonte); os prazos abertos são
   recalculados na execução seguinte e a mudança fica registrada em Conferência.
+
+## Comarcas e unidades reorganizadas
+
+- O código de origem (4 últimos dígitos do número do processo) não muda quando a unidade é unificada ou
+  extinta. A coluna **Comarca** mostra a **unidade atual**: o robô a lê do nome do órgão julgador que vem
+  do DJEN; quando o nome não basta (2º grau, nomes sem município), usa a aba **Comarcas**.
+- Na aba **Comarcas**, a coluna **Unidade atual** liga códigos antigos à unidade que os absorveu
+  (ex.: Santa Rita 0121 e Bayeux 0751 → `Santa Rita/Bayeux`). Linhas com **Conferido = N** foram incluídas
+  pelo robô ou ainda dependem do ato normativo: confira e complete.
+- Feriado municipal de unidade unificada: na aba Feriados, abrangência `TJPB:Santa Rita/Bayeux` (vale para
+  todos os códigos absorvidos). Também funciona por código: `TJPB:0751`.
+- Unidade nova ganha linha automática no quadro por comarca do Painel.
