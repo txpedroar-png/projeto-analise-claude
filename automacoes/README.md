@@ -16,9 +16,10 @@ Os quatro módulos acima usam só a biblioteca padrão. Os robôs abaixo precisa
 
 | Robô | Substitui | Comando |
 |---|---|---|
-| `robo_prazos.py` | Robô de prazos v5 **e** resgate de e-mails (cadastra processos novos achados no DJEN) | `python -m automacoes.robos.robo_prazos` |
+| `robo_planilha.py` | **Robô atual**: DJEN → Planilha Google (modelo v2), sem duplicar, sem tocar nas colunas da equipe | `python -m automacoes.robos.robo_planilha --ensaio` |
+| `robo_prazos.py` | Robô para planilha .xlsx local (reserva) | `python -m automacoes.robos.robo_prazos` |
 | `calculadora_bacen.py` | Calculadora Bacen | `python -m automacoes.robos.calculadora_bacen Calculo_Valores.xlsx --citacao 28/05/2019 --dobra` |
-| `iniciar_robos.bat` | `iniciar_robo.bat` | Agendador de Tarefas: roda o robô de prazos, com log em `logs\robos.log` |
+| `iniciar_robos.bat` | `iniciar_robo.bat` | Agendador de Tarefas: roda o robô da Planilha Google, log em `logs\robo_planilha.log`; `iniciar_robos.bat ensaio` não grava |
 
 ### Instalação no computador do escritório (uma vez)
 
@@ -64,3 +65,5 @@ Abas: Painel · Prazos (base diária, por tribunal → comarca → vencimento) �
 Processos (com CPF do cliente) · Clientes (Cadastro Central, CPF como chave) · Decisões (jurimetria) · Publicações · Feriados · Comarcas · Auditoria · Leia-me.
 As datas de prazo vêm do motor `prazos.py`; as fórmulas cuidam só do que muda com o dia. O arquivo gerado contém
 dados de clientes: não versionar.
+
+Passo a passo de instalação no computador do escritório: [`docs/INSTALACAO_ROBO.md`](../docs/INSTALACAO_ROBO.md).

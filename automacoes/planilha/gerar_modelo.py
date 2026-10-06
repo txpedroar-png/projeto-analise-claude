@@ -25,7 +25,7 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from automacoes import cnj
@@ -175,6 +175,13 @@ def prazos_da_linha(tipo_antigo: str, prov: str, texto: str, orgao: str) -> list
     return [("", None, "")]
 
 
+def identificador(digitos: str, publicacao: dt.date, natureza: str) -> str:
+    """ID estável de um prazo: processo + publicação + natureza. Usado pela migração e pelo robô
+    (as planilhas já gravadas dependem deste formato: não alterar)."""
+    sufixo = re.sub(r"\W+", "", (natureza or "ato").lower())[:12]
+    return f"{digitos}-{publicacao:%Y%m%d}-{sufixo}"
+
+
 def dia_util_anterior(cal: Calendario, d: dt.date) -> dt.date:
     d -= dt.timedelta(days=1)
     while d.weekday() >= 5 or cal.feriado_conferido(d):
@@ -272,8 +279,7 @@ def migrar(origem: Path, hoje: dt.date):
             teor = " | ".join(x for x in (prov, obs if not obs_equipe else "") if x)
             providencia = "" if re.match(r"(Prazo |Intimação|Decisão no|Despacho no|Expediente no|Publicação / Intimação simples)", prov) else prov
             providencia = re.sub(r"^Manifestação / Providência no prazo de \d+ dias$", "Manifestação (ler o ato)", providencia)
-            slug = re.sub(r"\W+", "", (natureza or "ato").lower())[:12]
-            ident = f"{d}-{(pub or hoje):%Y%m%d}-{slug}"
+            ident = identificador(d, pub or hoje, natureza)
             if ident in prazos:
                 continue
             prazos[ident] = {
@@ -338,6 +344,60 @@ def migrar(origem: Path, hoje: dt.date):
 
 
 # ---------------------------------------------------------------- montagem
+def _vlookup_processos(chave: str, P: dict, coluna: str) -> str:
+    """VLOOKUP na aba Processos a partir da coluna Processo, pela posição real da coluna desejada."""
+    if coluna not in P:
+        return '""'
+    deslocamento = column_index_from_string(P[coluna]) - column_index_from_string(P["Processo"]) + 1
+    return (f'IFERROR(""&VLOOKUP({chave},Processos!${P["Processo"]}:${P[coluna]},{deslocamento},FALSE),"")')
+
+
+def formulas_prazos(r: int, L: dict, P: dict) -> dict:
+    """Fórmulas de uma linha da aba Prazos. L e P: nome da coluna -> letra (Prazos e Processos)."""
+    pr, v, s = f"{L['Processo']}{r}", f"{L['Vencimento interno']}{r}", f"{L['Status']}{r}"
+    d, m, a = f"{L['Dias úteis restantes']}{r}", L["Criticidade"], L["Tribunal"]
+    encerrados = ",".join(f'{s}="{x}"' for x in STATUS_ENCERRADOS)
+    q, t = f"{L['Data do protocolo']}{r}", f"{L['Termo legal']}{r}"
+    f = {
+        L["Cliente"]: f'=IF({pr}="","",{_vlookup_processos(pr, P, "Cliente")})',
+        L["Área / nicho"]: f'=IF({pr}="","",{_vlookup_processos(pr, P, "Área / nicho")})',
+        L["Dias úteis restantes"]: (
+            f'=IF({v}="","",IF({v}=TODAY(),0,IF({v}>TODAY(),NETWORKDAYS(TODAY()+1,{v},{FERIADOS}),'
+            f'-NETWORKDAYS({v}+1,TODAY(),{FERIADOS}))))'),
+        m: (f'=IF({pr}="","",IF(OR({encerrados}),"—",IF({s}="A verificar (migração)","VERIFICAR",'
+            f'IF({d}="","SEM PRAZO",IF({d}<0,"VENCIDO",IF({d}=0,"VENCE HOJE",IF({d}<=5,"URGENTE","NORMAL")))))))'),
+        L["Folga no protocolo (d.u.)"]: (
+            f'=IF(OR({q}="",{t}=""),"",IF({q}<={t},NETWORKDAYS({q},{t},{FERIADOS})-1,'
+            f'-(NETWORKDAYS({t},{q},{FERIADOS})-1)))'),
+    }
+    if "Chave da vista (auxiliar)" in L:
+        # Numera as pendências de cada tribunal na ordem da base: "TJPB#1", "TJPB#2"... (usada pelas Vistas).
+        p = L["Processo"]
+        f[L["Chave da vista (auxiliar)"]] = (
+            f'=IF(OR({pr}="",{m}{r}="—"),"",{a}{r}&"#"&COUNTIFS({a}$3:{a}{r},{a}{r},{m}$3:{m}{r},"<>—",'
+            f'{p}$3:{p}{r},"<>"))')
+    return f
+
+
+def formulas_processos(r: int, P: dict, L: dict) -> dict:
+    """Fórmulas de uma linha da aba Processos (P) que consultam a aba Prazos (L)."""
+    d = f"{P['Processo']}{r}"
+    lp, lv = L["Processo"], L["Vencimento interno"]
+    f = {}
+    if "Prazos registrados" in P:
+        f[P["Prazos registrados"]] = f'=IF({d}="","",COUNTIF(Prazos!${lp}:${lp},{d}))'
+    if "Próximo vencimento interno" in P:
+        f[P["Próximo vencimento interno"]] = (
+            f'=IF({d}="","",IFERROR(1/(1/_xlfn.MINIFS(Prazos!${lv}:${lv},Prazos!${lp}:${lp},{d},'
+            f'Prazos!${lv}:${lv},">="&TODAY())),""))')
+    if "Vínculo com o cadastro" in P and "CPF do cliente" in P:
+        cpf = f"{P['CPF do cliente']}{r}"
+        f[P["Vínculo com o cadastro"]] = (
+            f'=IF({d}="","",IF({cpf}="","Sem CPF: vincular ao cadastro",'
+            f'IF(COUNTIF(Clientes!$A:$A,{cpf})=0,"CPF fora do cadastro","Vinculado")))')
+    return f
+
+
 PRAZOS_COLS = [
     # (cabeçalho, largura, bloco)
     ("Tribunal", 8, 0), ("Comarca", 20, 0), ("Órgão julgador", 26, 0), ("Processo", 25, 0), ("Cliente", 22, 0),
@@ -402,26 +462,8 @@ def aba_prazos(wb, prazos, hoje, linhas_extra=25):
         for i, (nome, *_) in enumerate(PRAZOS_COLS, 1):
             if nome in p and p[nome] not in (None, ""):
                 ws.cell(r, i, p[nome])
-        ws[f"{L['Cliente']}{r}"] = f'=IF({L["Processo"]}{r}="","",IFERROR(""&VLOOKUP({L["Processo"]}{r},Processos!$D:${PC["Cliente"]},2,FALSE),""))'
-        ws[f"{L['Área / nicho']}{r}"] = f'=IF({L["Processo"]}{r}="","",IFERROR(""&VLOOKUP({L["Processo"]}{r},Processos!$D:${PC["Área / nicho"]},{PROC_COLS.index(("Área / nicho", 16)) - 2},FALSE),""))'
-        v, s = f"{L['Vencimento interno']}{r}", f"{L['Status']}{r}"
-        ws[f"{L['Dias úteis restantes']}{r}"] = (
-            f'=IF({v}="","",IF({v}=TODAY(),0,IF({v}>TODAY(),NETWORKDAYS(TODAY()+1,{v},{FERIADOS}),'
-            f'-NETWORKDAYS({v}+1,TODAY(),{FERIADOS}))))')
-        d = f"{L['Dias úteis restantes']}{r}"
-        encerrados = ",".join(f'{s}="{x}"' for x in STATUS_ENCERRADOS)
-        ws[f"{L['Criticidade']}{r}"] = (
-            f'=IF({L["Processo"]}{r}="","",IF(OR({encerrados}),"—",IF({s}="A verificar (migração)","VERIFICAR",'
-            f'IF({d}="","SEM PRAZO",IF({d}<0,"VENCIDO",IF({d}=0,"VENCE HOJE",IF({d}<=5,"URGENTE","NORMAL")))))))')
-        q, t = f"{L['Data do protocolo']}{r}", f"{L['Termo legal']}{r}"
-        ws[f"{L['Folga no protocolo (d.u.)']}{r}"] = (
-            f'=IF(OR({q}="",{t}=""),"",IF({q}<={t},NETWORKDAYS({q},{t},{FERIADOS})-1,'
-            f'-(NETWORKDAYS({t},{q},{FERIADOS})-1)))')
-        # Numera as pendências de cada tribunal na ordem da base: "TJPB#1", "TJPB#2"... (usada pelas Vistas).
-        a, m, pr = L["Tribunal"], L["Criticidade"], L["Processo"]
-        ws[f"{L['Chave da vista (auxiliar)']}{r}"] = (
-            f'=IF(OR({pr}{r}="",{m}{r}="—"),"",{a}{r}&"#"&COUNTIFS({a}$3:{a}{r},{a}{r},{m}$3:{m}{r},"<>—",'
-            f'{pr}$3:{pr}{r},"<>"))')
+        for letra, formula in formulas_prazos(r, L, PC).items():
+            ws[f"{letra}{r}"] = formula
         for nome in ("Disponibilização", "Publicação", "Vencimento interno", "Termo legal", "Data do protocolo"):
             ws[f"{L[nome]}{r}"].number_format = DATA
         for nome in ("Providência", "Observações da equipe", "Conferência", "Teor / resumo do ato"):
@@ -462,6 +504,7 @@ CLI_COLS = [
     ("Conferência", 36), ("Classificação original", 40),
 ]
 PC = {n: get_column_letter(i) for i, (n, _) in enumerate(PROC_COLS, 1)}
+LP = {n: get_column_letter(i) for i, (n, *_) in enumerate(PRAZOS_COLS, 1)}
 CC = {n: get_column_letter(i) for i, (n, _) in enumerate(CLI_COLS, 1)}
 
 
@@ -482,16 +525,10 @@ def aba_processos(wb, processos, clientes=(), linhas_extra=20):
                 ws.cell(r, i, p[nome])
         if p:
             ws.cell(r, PROC_COLS.index(("Situação", 12)) + 1, "Ativo")
-        d = f"{pc['Processo']}{r}"
-        ws[f"{pc['Prazos registrados']}{r}"] = f'=IF({d}="","",COUNTIF(Prazos!$D:$D,{d}))'
-        ws[f"{pc['Próximo vencimento interno']}{r}"] = (
-            f'=IF({d}="","",IFERROR(1/(1/_xlfn.MINIFS(Prazos!$J:$J,Prazos!$D:$D,{d},Prazos!$J:$J,">="&TODAY())),""))')
+        for letra, formula in formulas_processos(r, pc, LP).items():
+            ws[f"{letra}{r}"] = formula
         ws[f"{pc['Próximo vencimento interno']}{r}"].number_format = DATA
         ws[f"{pc['Valor da causa (R$)']}{r}"].number_format = '"R$" #,##0.00'
-        cpf = f"{pc['CPF do cliente']}{r}"
-        ws[f"{pc['Vínculo com o cadastro']}{r}"] = (
-            f'=IF({d}="","",IF({cpf}="","Sem CPF: vincular ao cadastro",'
-            f'IF(COUNTIF(Clientes!$A:$A,{cpf})=0,"CPF fora do cadastro","Vinculado")))')
     validacao(ws, AREAS, f"{pc['Área / nicho']}2:{pc['Área / nicho']}{ultima}")
     validacao(ws, INSTANCIAS, f"{pc['Instância atual']}2:{pc['Instância atual']}{ultima}")
     validacao(ws, ["Postulatória", "Instrutória", "Sentenciado", "Recursal", "Cumprimento de sentença",
@@ -752,6 +789,9 @@ LEIA_ME = [
                  "documentos → Pronto para ajuizar → Ajuizado (automático quando algum processo recebe o CPF). Ao "
                  "ajuizar, preencher o CPF do cliente na aba Processos: o vínculo passa a 'Vinculado'. Sugestões de "
                  "vínculo por nome só aparecem com nome completo idêntico e sem homônimos, e sempre exigem conferência."),
+    ("Robô e ajustes", "Prazo lançado à mão: preencher Processo, Disponibilização e Prazo; o robô calcula os vencimentos. "
+                       "Para o robô não recalcular uma linha (ex.: suspensão por portaria), escrever 'ajuste manual' "
+                       "nas Observações da equipe."),
     ("Ao protocolar", "Status = Protocolado / cumprido e preencher a Data do protocolo: a linha esmaece e a coluna "
                       "Folga mede quantos dias úteis sobraram até o termo legal (indicador de gestão)."),
     ("Decisões", "Toda sentença, acórdão ou tutela relevante ganha uma linha em Decisões. É a base para saber, com "

@@ -43,6 +43,15 @@ class Evento:
     conferido: bool
 
 
+def _data(v) -> dt.date:
+    if isinstance(v, dt.datetime):
+        return v.date()
+    if isinstance(v, dt.date):
+        return v
+    s = str(v).strip()
+    return dt.datetime.strptime(s, "%d/%m/%Y").date() if "/" in s else dt.date.fromisoformat(s)
+
+
 class Calendario:
     """Calendário forense de um tribunal (e, opcionalmente, de uma comarca)."""
 
@@ -51,23 +60,35 @@ class Calendario:
         if not caminho.exists():
             # Falha explícita: calendário ausente não pode virar "sem feriados" em silêncio.
             raise FileNotFoundError(f"Calendário de feriados não encontrado: {caminho}")
+        with caminho.open(encoding="utf-8-sig", newline="") as f:
+            self._carregar(list(csv.DictReader(f)), str(caminho), tribunal, comarca)
+
+    @classmethod
+    def de_registros(cls, registros: list[dict], tribunal: str = "TJPB", comarca: str | None = None,
+                     origem: str = "aba Feriados") -> "Calendario":
+        """Mesmo calendário a partir de dicionários (ex.: linhas da aba Feriados da planilha).
+        'data' aceita date/datetime ou texto AAAA-MM-DD / DD/MM/AAAA."""
+        cal = cls.__new__(cls)
+        cal._carregar(registros, origem, tribunal, comarca)
+        return cal
+
+    def _carregar(self, registros, origem: str, tribunal: str, comarca: str | None) -> None:
         self.tribunal = tribunal.upper()
         self.comarca = comarca
         self.eventos: dict[dt.date, list[Evento]] = {}
-        with caminho.open(encoding="utf-8-sig", newline="") as f:
-            for n, linha in enumerate(csv.DictReader(f), start=2):
-                try:
-                    ev = Evento(
-                        data=dt.date.fromisoformat(linha["data"].strip()),
-                        descricao=linha["descricao"].strip(),
-                        abrangencia=linha["abrangencia"].strip().upper(),
-                        tipo=linha["tipo"].strip().upper(),
-                        conferido=linha["conferido"].strip().upper() == "S",
-                    )
-                except (KeyError, ValueError, AttributeError) as e:
-                    raise ValueError(f"{caminho}, linha {n}: registro inválido ({e})") from e
-                if self._aplica(ev.abrangencia):
-                    self.eventos.setdefault(ev.data, []).append(ev)
+        for n, linha in enumerate(registros, start=2):
+            try:
+                ev = Evento(
+                    data=_data(linha["data"]),
+                    descricao=str(linha["descricao"]).strip(),
+                    abrangencia=str(linha["abrangencia"]).strip().upper(),
+                    tipo=str(linha["tipo"]).strip().upper(),
+                    conferido=str(linha["conferido"]).strip().upper() == "S",
+                )
+            except (KeyError, ValueError, AttributeError, TypeError) as e:
+                raise ValueError(f"{origem}, linha {n}: registro inválido ({e})") from e
+            if self._aplica(ev.abrangencia):
+                self.eventos.setdefault(ev.data, []).append(ev)
         self.anos_cobertos = {d.year for d in self.eventos}
 
     def _aplica(self, abrangencia: str) -> bool:
