@@ -56,10 +56,11 @@ Prazo em dobro (arts. 180, 183, 186 e 229 do CPC); ciência ficta por portal (ar
 `automacoes/planilha/gerar_modelo.py` gera o modelo da planilha e migra os dados da anterior:
 
 ```bash
-python -m automacoes.planilha.gerar_modelo exportacao_da_planilha_antiga.xlsx -o modelo_v2.xlsx
+python -m automacoes.planilha.gerar_modelo exportacao_da_planilha_antiga.xlsx -o modelo_v2.xlsx \
+    --cadastro exportacao_do_cadastro_de_clientes.xlsx
 ```
 
 Abas: Painel · Prazos (base diária, por tribunal → comarca → vencimento) · Vistas por tribunal (somente leitura) ·
-Processos (cadastro único) · Decisões (jurimetria) · Publicações · Feriados · Comarcas · Auditoria · Leia-me.
+Processos (com CPF do cliente) · Clientes (Cadastro Central, CPF como chave) · Decisões (jurimetria) · Publicações · Feriados · Comarcas · Auditoria · Leia-me.
 As datas de prazo vêm do motor `prazos.py`; as fórmulas cuidam só do que muda com o dia. O arquivo gerado contém
 dados de clientes: não versionar.

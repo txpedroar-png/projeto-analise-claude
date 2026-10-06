@@ -29,6 +29,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from automacoes import cnj
+from automacoes.planilha.cadastro import ler_cadastro, normalizar, sugerir_vinculo
 from automacoes.prazos import CSV_PADRAO, Calendario, calcular_prazo
 from automacoes.triagem import detectar_prazo
 
@@ -401,8 +402,8 @@ def aba_prazos(wb, prazos, hoje, linhas_extra=25):
         for i, (nome, *_) in enumerate(PRAZOS_COLS, 1):
             if nome in p and p[nome] not in (None, ""):
                 ws.cell(r, i, p[nome])
-        ws[f"{L['Cliente']}{r}"] = f'=IF({L["Processo"]}{r}="","",IFERROR(""&VLOOKUP({L["Processo"]}{r},Processos!$D:$E,2,FALSE),""))'
-        ws[f"{L['Área / nicho']}{r}"] = f'=IF({L["Processo"]}{r}="","",IFERROR(""&VLOOKUP({L["Processo"]}{r},Processos!$D:$G,4,FALSE),""))'
+        ws[f"{L['Cliente']}{r}"] = f'=IF({L["Processo"]}{r}="","",IFERROR(""&VLOOKUP({L["Processo"]}{r},Processos!$D:${PC["Cliente"]},2,FALSE),""))'
+        ws[f"{L['Área / nicho']}{r}"] = f'=IF({L["Processo"]}{r}="","",IFERROR(""&VLOOKUP({L["Processo"]}{r},Processos!$D:${PC["Área / nicho"]},{PROC_COLS.index(("Área / nicho", 16)) - 2},FALSE),""))'
         v, s = f"{L['Vencimento interno']}{r}", f"{L['Status']}{r}"
         ws[f"{L['Dias úteis restantes']}{r}"] = (
             f'=IF({v}="","",IF({v}=TODAY(),0,IF({v}>TODAY(),NETWORKDAYS(TODAY()+1,{v},{FERIADOS}),'
@@ -449,19 +450,31 @@ def aba_prazos(wb, prazos, hoje, linhas_extra=25):
 
 PROC_COLS = [
     ("Tribunal", 8), ("Comarca", 20), ("Órgão julgador", 26), ("Processo", 25), ("Cliente", 24),
-    ("Parte contrária", 22), ("Área / nicho", 16), ("Tese principal", 30), ("Hipervulnerabilidade", 22),
+    ("CPF do cliente", 15), ("Parte contrária", 22), ("Área / nicho", 16), ("Tese principal", 30), ("Hipervulnerabilidade", 22),
     ("Instância atual", 10), ("Fase", 16), ("Situação", 12), ("Valor da causa (R$)", 14),
     ("Pasta do caso (link)", 18), ("Observações", 36), ("Prazos registrados", 9), ("Próximo vencimento interno", 12),
+    ("Vínculo com o cadastro", 24), ("Sugestão de vínculo (conferir)", 34),
 ]
+CLI_COLS = [
+    ("CPF", 15), ("Nome", 30), ("Prioridade / hipervulnerabilidade", 28), ("Área", 16), ("Comarca provável", 16),
+    ("Espécie da demanda", 40), ("Ação sugerida", 40), ("Situação documental", 20), ("Etapa", 22),
+    ("Processos vinculados", 10), ("Ficha", 12), ("Pasta", 12), ("Data de entrada", 16), ("Observações", 36),
+    ("Conferência", 36), ("Classificação original", 40),
+]
+PC = {n: get_column_letter(i) for i, (n, _) in enumerate(PROC_COLS, 1)}
+CC = {n: get_column_letter(i) for i, (n, _) in enumerate(CLI_COLS, 1)}
 
 
-def aba_processos(wb, processos, linhas_extra=20):
+def aba_processos(wb, processos, clientes=(), linhas_extra=20):
     ws = wb.create_sheet("Processos")
     ws.sheet_properties.tabColor = AZUL
     cabecalho(ws, PROC_COLS)
     processos.sort(key=lambda p: (ordem_tribunal(p["Tribunal"]), p["Comarca"], p["Processo"]))
-    pc = {n: get_column_letter(i) for i, (n, _) in enumerate(PROC_COLS, 1)}
+    pc = PC
     ultima = 1 + len(processos) + linhas_extra
+    for p in processos:
+        if p.get("Cliente") and (c := sugerir_vinculo(p["Cliente"], list(clientes))):
+            p["Sugestão de vínculo (conferir)"] = f"{c['Nome']} – CPF {c['CPF']} (mesmo nome no cadastro)"
     for r in range(2, ultima + 1):
         p = processos[r - 2] if r - 2 < len(processos) else {}
         for i, (nome, _) in enumerate(PROC_COLS, 1):
@@ -475,6 +488,10 @@ def aba_processos(wb, processos, linhas_extra=20):
             f'=IF({d}="","",IFERROR(1/(1/_xlfn.MINIFS(Prazos!$J:$J,Prazos!$D:$D,{d},Prazos!$J:$J,">="&TODAY())),""))')
         ws[f"{pc['Próximo vencimento interno']}{r}"].number_format = DATA
         ws[f"{pc['Valor da causa (R$)']}{r}"].number_format = '"R$" #,##0.00'
+        cpf = f"{pc['CPF do cliente']}{r}"
+        ws[f"{pc['Vínculo com o cadastro']}{r}"] = (
+            f'=IF({d}="","",IF({cpf}="","Sem CPF: vincular ao cadastro",'
+            f'IF(COUNTIF(Clientes!$A:$A,{cpf})=0,"CPF fora do cadastro","Vinculado")))')
     validacao(ws, AREAS, f"{pc['Área / nicho']}2:{pc['Área / nicho']}{ultima}")
     validacao(ws, INSTANCIAS, f"{pc['Instância atual']}2:{pc['Instância atual']}{ultima}")
     validacao(ws, ["Postulatória", "Instrutória", "Sentenciado", "Recursal", "Cumprimento de sentença",
@@ -482,6 +499,46 @@ def aba_processos(wb, processos, linhas_extra=20):
     validacao(ws, ["Ativo", "Suspenso", "Encerrado"], f"{pc['Situação']}2:{pc['Situação']}{ultima}")
     ws.freeze_panes = "F2"
     ws.auto_filter.ref = f"A1:{get_column_letter(len(PROC_COLS))}{ultima}"
+    vinc = f"{pc['Vínculo com o cadastro']}2:{pc['Vínculo com o cadastro']}{ultima}"
+    for valor, cor in (("Vinculado", "D9EAD3"), ("CPF fora do cadastro", "F4CCCC"), ("Sem CPF: vincular ao cadastro", "FCE5CD")):
+        ws.conditional_formatting.add(vinc, FormulaRule(formula=[f'${pc["Vínculo com o cadastro"]}2="{valor}"'],
+                                                        fill=preencher(cor)))
+
+
+ETAPAS = ["Pendente de documentos", "Pronto para ajuizar", "Ajuizado"]
+
+
+def aba_clientes(wb, clientes, linhas_extra=30):
+    """Cadastro único de clientes (CPF = chave). Alimentado pelo Cadastro Central; etapa e vínculo por fórmula."""
+    ws = wb.create_sheet("Clientes")
+    ws.sheet_properties.tabColor = BRONZE
+    cabecalho(ws, CLI_COLS, cor=BRONZE)
+    clientes = sorted(clientes, key=lambda c: (c["Área"], c["Comarca provável"], normalizar(c["Nome"])))
+    ultima = 1 + len(clientes) + linhas_extra
+    for r in range(2, ultima + 1):
+        c = clientes[r - 2] if r - 2 < len(clientes) else {}
+        for i, (nome, _) in enumerate(CLI_COLS, 1):
+            if c.get(nome) and nome not in ("Ficha", "Pasta"):
+                ws.cell(r, i, c[nome])
+        for nome, rotulo in (("Ficha", "Abrir ficha"), ("Pasta", "Abrir pasta")):
+            if c.get(nome):
+                ws[f"{CC[nome]}{r}"] = f'=HYPERLINK("{c[nome]}","{rotulo}")'
+        a = f"{CC['CPF']}{r}"
+        ws[f"{CC['Processos vinculados']}{r}"] = f'=IF({a}="","",COUNTIF(Processos!${PC["CPF do cliente"]}:${PC["CPF do cliente"]},{a}))'
+        n, sd = f"{CC['Processos vinculados']}{r}", f"{CC['Situação documental']}{r}"
+        ws[f"{CC['Etapa']}{r}"] = (f'=IF({a}="","",IF({n}>0,"Ajuizado",IF({sd}="Pronto para ajuizamento",'
+                                   f'"Pronto para ajuizar","Pendente de documentos")))')
+        ws[f"{CC['Data de entrada']}{r}"].number_format = "DD/MM/YYYY HH:MM"
+        for nome in ("Espécie da demanda", "Ação sugerida", "Observações", "Conferência"):
+            ws[f"{CC[nome]}{r}"].alignment = QUEBRA
+    validacao(ws, AREAS, f"{CC['Área']}2:{CC['Área']}{ultima}")
+    validacao(ws, ["Pendente de documentos", "Pronto para ajuizamento"],
+              f"{CC['Situação documental']}2:{CC['Situação documental']}{ultima}")
+    etapa = f"{CC['Etapa']}2:{CC['Etapa']}{ultima}"
+    for valor, cor in zip(ETAPAS, ("FCE5CD", "FFF2CC", "D9EAD3")):
+        ws.conditional_formatting.add(etapa, FormulaRule(formula=[f'${CC["Etapa"]}2="{valor}"'], fill=preencher(cor)))
+    ws.freeze_panes = "C2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(CLI_COLS))}{ultima}"
 
 
 DEC_COLS = [
@@ -625,6 +682,12 @@ def aba_painel(wb, combinacoes, hoje):
         ("A verificar (herdados da migração)", f'=COUNTIF({S},"A verificar (migração)")', "FCE5CD"),
         ("Audiências e pautas pendentes", f'=COUNTIFS({J},"Audiência",{S},"<>Protocolado / cumprido")+'
                                           f'COUNTIFS({J},"Pauta de julgamento",{S},"<>Protocolado / cumprido")', "FFFFFF"),
+        ("Clientes no cadastro", f'=COUNTA(Clientes!$A:$A)-1', "FFFFFF"),
+        ("Clientes prontos para ajuizar", f'=COUNTIF(Clientes!${CC["Etapa"]}:${CC["Etapa"]},"Pronto para ajuizar")', "FFF2CC"),
+        ("Clientes pendentes de documentos",
+         f'=COUNTIF(Clientes!${CC["Etapa"]}:${CC["Etapa"]},"Pendente de documentos")', "FCE5CD"),
+        ("Processos sem cliente vinculado",
+         f'=COUNTIF(Processos!${PC["Vínculo com o cadastro"]}:${PC["Vínculo com o cadastro"]},"Sem CPF*")', "FCE5CD"),
     ]
     ws["A4"], ws["B4"] = "Indicador", "Quantidade"
     for c in ("A4", "B4"):
@@ -685,6 +748,10 @@ LEIA_ME = [
     ("Equipe", "Status, data do protocolo, observações (formato: dd/mm – iniciais: texto, mais recente primeiro), link "
                "da minuta, providência (quando o robô não souber) e o cadastro da aba Processos (cliente, parte "
                "contrária, área, tese, hipervulnerabilidade). Cliente e área aparecem sozinhos na aba Prazos."),
+    ("Clientes", "Cadastro único, com CPF como chave, alimentado pelo Cadastro Central de Clientes. Etapa: Pendente de "
+                 "documentos → Pronto para ajuizar → Ajuizado (automático quando algum processo recebe o CPF). Ao "
+                 "ajuizar, preencher o CPF do cliente na aba Processos: o vínculo passa a 'Vinculado'. Sugestões de "
+                 "vínculo por nome só aparecem com nome completo idêntico e sem homônimos, e sempre exigem conferência."),
     ("Ao protocolar", "Status = Protocolado / cumprido e preencher a Data do protocolo: a linha esmaece e a coluna "
                       "Folga mede quantos dias úteis sobraram até o termo legal (indicador de gestão)."),
     ("Decisões", "Toda sentença, acórdão ou tutela relevante ganha uma linha em Decisões. É a base para saber, com "
@@ -768,8 +835,9 @@ def aba_auditoria(wb):
         c.font, c.fill = BRANCO, preencher(CINZA)
 
 
-def gerar(origem: Path, saida: Path, hoje: dt.date) -> dict:
+def gerar(origem: Path, saida: Path, hoje: dt.date, cadastro: Path | None = None) -> dict:
     prazos, processos, decisoes, publicacoes, duplicatas = migrar(origem, hoje)
+    clientes, avisos_cadastro = ler_cadastro(cadastro) if cadastro else ([], [])
     wb = Workbook()
     wb.remove(wb.active)
     aba_prazos(wb, prazos, hoje)
@@ -777,7 +845,8 @@ def gerar(origem: Path, saida: Path, hoje: dt.date) -> dict:
     aba_painel(wb, combinacoes, hoje)
     for trib in [t for t in ORDEM_TRIBUNAIS if any(p["Tribunal"] == t for p in prazos)]:
         aba_vista(wb, trib)
-    aba_processos(wb, processos)
+    aba_processos(wb, processos, clientes)
+    aba_clientes(wb, clientes)
     aba_decisoes(wb, decisoes)
     aba_publicacoes(wb, publicacoes)
     aba_feriados(wb)
@@ -788,7 +857,9 @@ def gerar(origem: Path, saida: Path, hoje: dt.date) -> dict:
     return {"prazos": len(prazos), "processos": len(processos), "decisoes": len(decisoes),
             "publicacoes": len(publicacoes), "duplicatas_removidas": duplicatas,
             "status": {s: sum(p["Status"] == s for p in prazos) for s in STATUS},
-            "com_conferencia": sum(bool(p["Conferência"]) for p in prazos)}
+            "com_conferencia": sum(bool(p["Conferência"]) for p in prazos),
+            "clientes": len(clientes), "avisos_cadastro": avisos_cadastro,
+            "sugestoes_vinculo": sum(bool(p.get("Sugestão de vínculo (conferir)")) for p in processos)}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -796,8 +867,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("origem", type=Path)
     p.add_argument("-o", "--saida", type=Path, default=Path("modelo_v2.xlsx"))
     p.add_argument("--hoje", type=dt.date.fromisoformat, default=dt.date.today())
+    p.add_argument("--cadastro", type=Path, help="exportação .xlsx do Cadastro Central de Clientes")
     a = p.parse_args(argv)
-    print(gerar(a.origem, a.saida, a.hoje))
+    print(gerar(a.origem, a.saida, a.hoje, a.cadastro))
     return 0
 
 
