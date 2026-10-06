@@ -50,3 +50,16 @@ python -m pytest -q
 ## Fora do escopo, por decisão do escritório
 
 Prazo em dobro (arts. 180, 183, 186 e 229 do CPC); ciência ficta por portal (art. 5º, § 3º, da Lei 11.419/2006); prazos em horas ou meses. Quando aparecem no texto, a triagem marca a linha para revisão.
+
+## Planilha de gestão (modelo v2)
+
+`automacoes/planilha/gerar_modelo.py` gera o modelo da planilha e migra os dados da anterior:
+
+```bash
+python -m automacoes.planilha.gerar_modelo exportacao_da_planilha_antiga.xlsx -o modelo_v2.xlsx
+```
+
+Abas: Painel · Prazos (base diária, por tribunal → comarca → vencimento) · Vistas por tribunal (somente leitura) ·
+Processos (cadastro único) · Decisões (jurimetria) · Publicações · Feriados · Comarcas · Auditoria · Leia-me.
+As datas de prazo vêm do motor `prazos.py`; as fórmulas cuidam só do que muda com o dia. O arquivo gerado contém
+dados de clientes: não versionar.

@@ -153,7 +153,7 @@ def calcular_prazo(
     d = disponibilizacao + UM_DIA
     while d <= termo_legal:
         for ev in cal.eventos.get(d, ()):
-            if not ev.conferido:
+            if not ev.conferido and d.weekday() < 5 and not cal.em_recesso(d):
                 avisos.append(f"{d:%d/%m/%Y} {ev.descricao} ({ev.tipo}) NÃO CONFERIDO: se confirmado, o prazo avança.")
             elif ev.tipo == "EXPEDIENTE_REDUZIDO" and d in (vencimento, termo_legal):
                 avisos.append(f"{d:%d/%m/%Y} expediente reduzido no vencimento: conferir prorrogação (art. 224, § 1º, CPC).")
